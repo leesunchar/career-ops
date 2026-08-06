@@ -1,0 +1,57 @@
+name: CareerOps A-grade Kakao Alerts
+
+on:
+  schedule:
+    # 00:00 UTC = 09:00 Asia/Seoul
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: careerops-kakao-alert
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Restore alert history
+        id: alert-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .github/career-alert-state.json
+          key: career-alert-state-${{ github.run_id }}
+          restore-keys: |
+            career-alert-state-
+
+      - name: Install and configure PlayMCP client
+        env:
+          MCPORTER_CREDENTIALS_B64: ${{ secrets.MCPORTER_CREDENTIALS_B64 }}
+        run: |
+          test -n "$MCPORTER_CREDENTIALS_B64" || { echo "Missing MCPORTER_CREDENTIALS_B64 secret"; exit 1; }
+          npm install --global mcporter@0.13.0
+          mcporter config add mcp-gateway https://playmcp.kakao.com/mcp --auth oauth --scope home
+          mkdir -p "$HOME/.mcporter"
+          printf '%s' "$MCPORTER_CREDENTIALS_B64" | base64 --decode > "$HOME/.mcporter/credentials.json"
+          chmod 600 "$HOME/.mcporter/credentials.json"
+
+      - name: Search, rank, and notify new A-grade jobs
+        env:
+          ALERT_STATE_PATH: .github/career-alert-state.json
+        run: node .github/scripts/career-alert.mjs
+
+      - name: Save alert history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .github/career-alert-state.json
+          key: career-alert-state-${{ github.run_id }}
