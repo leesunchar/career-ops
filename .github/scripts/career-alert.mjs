@@ -24,13 +24,13 @@ function descendants(node) {
 function extractJobs(payload) {
   if (!payload.widget) throw new Error("PlayMCP 응답에 채용공고 위젯이 없습니다.");
   const nodes = descendants(payload.widget);
-  const listColumn = nodes.find(
-    (node) => node.type === "Col" && node.children?.some((child) => child.type === "Button" && child.label === "공고 더보기"),
+  const jobCards = nodes.filter(
+    (node) => node.type === "Box" && descendants(node).some((child) => child.onClickAction?.payload?.jobId),
   );
-  if (!listColumn?.children) throw new Error("PlayMCP 채용공고 목록 구조를 인식하지 못했습니다.");
+  if (!jobCards.length) throw new Error("PlayMCP 응답에서 채용공고 카드를 찾지 못했습니다.");
 
   const jobs = [];
-  for (const card of listColumn.children.filter((child) => child.type === "Box")) {
+  for (const card of jobCards) {
     const cardNodes = descendants(card);
     const action = cardNodes.find((node) => node.onClickAction?.payload?.jobId)?.onClickAction?.payload;
     const texts = cardNodes
@@ -49,7 +49,9 @@ function extractJobs(payload) {
       url: `https://saramin.co.kr/zf_user/jobs/relay/view?rec_idx=${action.jobId}`,
     });
   }
-  return [...new Map(jobs.map((job) => [job.id, job])).values()];
+  const uniqueJobs = [...new Map(jobs.map((job) => [job.id, job])).values()];
+  if (!uniqueJobs.length) throw new Error("PlayMCP 채용공고의 필수 항목을 읽지 못했습니다.");
+  return uniqueJobs;
 }
 
 function classify(title) {
