@@ -2,8 +2,8 @@ name: CareerOps A-grade Kakao Alerts
 
 on:
   schedule:
-    # 09:00 UTC = 18:00 Asia/Seoul
-    - cron: "0 9 * * *"
+    # 23:00 UTC = 08:00 Asia/Seoul on the following day
+    - cron: "0 23 * * *"
   workflow_dispatch:
 
 permissions:
