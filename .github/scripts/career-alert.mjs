@@ -2,18 +2,27 @@ import { execFile } from "node:child_process";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import {
+  MKS_FALLBACK,
+  compareWithMks,
+  extractCompanyInfoUrl,
+  scrapeCompanyMetrics,
+  salaryConditionScore,
+  companyGrowthScore,
+  comparisonSummary,
+} from "./company-benchmark.mjs";
 
 const execFileAsync = promisify(execFile);
-const searchQueries = ["반도체 공정", "공정 엔지니어", "반도체 장비", "CS 엔지니어", "FSE", "Field Service Engineer"];
+const searchQueries = [
+  "반도체 공정", "공정 엔지니어", "반도체 장비", "CS 엔지니어", "FSE", "Field Service Engineer",
+  "대기업 반도체 공정", "외국계 반도체 FSE", "ASML FSE", "Applied Materials FSE", "Lam Research FSE",
+  "KLA FSE", "도쿄일렉트론 CS", "세메스 공정", "삼성전자 공정", "SK하이닉스 공정",
+];
 const statePath = path.resolve(process.env.ALERT_STATE_PATH || ".github/career-alert-state.json");
 const searchBudgetMs = 6 * 60 * 1000;
 const searchCallTimeoutMs = 45_000;
 const educationBudgetMs = 2 * 60 * 1000;
-
-const majorCompanies = [
-  "삼성", "SK하이닉스", "하이닉스", "어플라이드머티어리얼즈", "Applied Materials",
-  "램리서치", "Lam Research", "도쿄일렉트론", "TEL", "ASML", "KLA", "한화", "현대", "LG", "티에스이",
-];
+const companyBudgetMs = 2 * 60 * 1000;
 
 const includesAny = (text, values) => {
   const normalized = text.toLocaleLowerCase("ko-KR");
@@ -79,7 +88,7 @@ function experienceFit(career, title) {
   return 3.5;
 }
 
-function conditionScore(location, text) {
+function locationScore(location, text) {
   let score = 3.0;
   if (includesAny(location, ["용인"])) score = 5.0;
   else if (includesAny(location, ["수원", "화성", "평택", "오산", "안성"])) score = 4.7;
@@ -92,22 +101,29 @@ function conditionScore(location, text) {
   return Math.min(5, score);
 }
 
-function growthScore(company, cluster, text) {
-  if (includesAny(company, majorCompanies)) return 5.0;
-  if (includesAny(text, ["gan", "sic", "microled", "ledos", "plasma", "전력 반도체", "첨단 패키징"])) return 4.6;
-  if (includesAny(text, ["반도체", "장비", "fab", "공정", "field service"])) return cluster === "process" ? 4.3 : 4.2;
-  return 3.5;
-}
-
-function rankJob(job) {
+function rankJob(job, metrics, benchmark, comparison) {
   const cluster = classify(job.title);
   const text = `${job.company} ${job.title} ${job.career} ${job.location}`;
+  const conditions = Math.round((locationScore(job.location, text) * 0.35 + salaryConditionScore(metrics, benchmark) * 0.65) * 10) / 10;
+  const growth = companyGrowthScore(metrics, benchmark);
+  const experience = experienceFit(job.career, job.title);
   const score = Math.round(((
-    experienceFit(job.career, job.title)
-    + conditionScore(job.location, text) * 2
-    + growthScore(job.company, cluster, text) * 3
+    experience
+    + conditions * 2
+    + growth * 3
   ) / 30) * 1000) / 10;
-  return { ...job, score, grade: score >= 80 ? "A" : score >= 65 ? "B" : score >= 50 ? "C" : "D" };
+  return {
+    ...job,
+    score,
+    grade: score >= 80 ? "A" : score >= 65 ? "B" : score >= 50 ? "C" : "D",
+    reason: `${cluster === "process" ? "공정 엔지니어" : "FSE/CS 엔지니어"} · ${comparisonSummary(comparison)}`,
+    missing: "실제 제안 연봉·성과급·복지는 면접 단계에서 별도 확인 필요",
+    keywords: [cluster === "process" ? "공정 엔지니어" : "FSE/CS", "대졸 이상", "MKS 상위 기업"],
+    breakdown: { experience, conditions, growth },
+    companyMetrics: metrics,
+    benchmarkMetrics: benchmark,
+    companyComparison: comparison,
+  };
 }
 
 function decodeHtml(value) {
@@ -175,6 +191,42 @@ async function callMcporter(tool, args) {
   return result;
 }
 
+async function resolveCompanyMetrics(company) {
+  const result = await callMcporter("SaraminMcp-search_company_info", {
+    request: { searchWord: company, page: 1, pageCount: 5, sort: "Relation" },
+  });
+  const companyUrl = extractCompanyInfoUrl(result, company);
+  return companyUrl ? scrapeCompanyMetrics(company, companyUrl) : null;
+}
+
+async function filterCompaniesAboveMks(jobs, concurrency = 4) {
+  let benchmark = MKS_FALLBACK;
+  const liveBenchmark = await resolveCompanyMetrics("엠케이에스코리아").catch(() => null);
+  if (liveBenchmark) benchmark = liveBenchmark;
+
+  const companies = [...new Set(jobs.map((job) => job.company))];
+  const metricsByCompany = new Map();
+  const deadline = Date.now() + companyBudgetMs;
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(concurrency, companies.length) }, async () => {
+    while (cursor < companies.length && Date.now() < deadline) {
+      const company = companies[cursor++];
+      const metrics = await resolveCompanyMetrics(company).catch(() => null);
+      if (metrics) metricsByCompany.set(company, metrics);
+    }
+  });
+  await Promise.all(workers);
+
+  const qualified = [];
+  for (const job of jobs) {
+    const metrics = metricsByCompany.get(job.company);
+    if (!metrics) continue;
+    const comparison = compareWithMks(metrics, benchmark);
+    if (comparison.qualified) qualified.push({ job, metrics, comparison });
+  }
+  return { qualified, benchmark, excluded: jobs.length - qualified.length };
+}
+
 async function searchJobs() {
   const jobsById = new Map();
   const startedAt = Date.now();
@@ -220,12 +272,16 @@ async function searchJobs() {
   const jobs = [...jobsById.values()];
   const targetJobs = jobs.filter((job) => classify(job.title));
   const bachelorJobs = await filterBachelorJobs(targetJobs);
-  return bachelorJobs.map(rankJob).sort((a, b) => b.score - a.score);
+  const { qualified, benchmark, excluded } = await filterCompaniesAboveMks(bachelorJobs);
+  const rankedJobs = qualified
+    .map(({ job, metrics, comparison }) => rankJob(job, metrics, benchmark, comparison))
+    .sort((a, b) => b.score - a.score);
+  return { rankedJobs, excluded, benchmark };
 }
 
 function alertMessage(job, fallback = false) {
-  const suffix = `\n${job.score.toFixed(1)}점 · ${job.deadline || "마감일 확인"}\n${job.url}`;
-  const prefix = fallback ? `[채용 중 추천 공고]\n${job.company}\n` : `[A등급 새 공고]\n${job.company}\n`;
+  const suffix = `\n${job.score.toFixed(1)}점 · MKS 대비 ${job.companyComparison.wins}/5 우위 · ${job.deadline || "마감일 확인"}\n${job.url}`;
+  const prefix = fallback ? `[MKS 상위 채용 중]\n${job.company}\n` : `[MKS 상위 신규 공고]\n${job.company}\n`;
   const available = Math.max(12, 200 - prefix.length - suffix.length);
   const title = job.title.length > available ? `${job.title.slice(0, available - 1)}…` : job.title;
   return `${prefix}${title}${suffix}`.slice(0, 200);
@@ -264,7 +320,7 @@ async function saveState(state) {
   await rename(temporaryPath, statePath);
 }
 
-const rankedJobs = await searchJobs();
+const { rankedJobs, excluded, benchmark } = await searchJobs();
 const aJobs = rankedJobs.filter((job) => job.grade === "A");
 const state = await readState(aJobs);
 const knownIds = new Set(state.notifiedJobIds || []);
@@ -306,7 +362,9 @@ await saveState({
 });
 
 const summary = `CareerOps: ${rankedJobs.length}건 평가, A등급 ${aJobs.length}건, 새 A등급 ${newAJobs.length}건, 채용 중 대체추천 ${fallbackSent}건, 카카오 발송 ${sent}건`;
+const benchmarkSummary = `MKS 기준 제외 ${excluded}건 · 기준 평균연봉 ${benchmark.averageSalaryManwon.toLocaleString("ko-KR")}만원`;
 console.log(summary);
+console.log(benchmarkSummary);
 if (process.env.GITHUB_STEP_SUMMARY) {
-  await appendFile(process.env.GITHUB_STEP_SUMMARY, `## CareerOps 알림 결과\n\n${summary}\n`, "utf8");
+  await appendFile(process.env.GITHUB_STEP_SUMMARY, `## CareerOps 알림 결과\n\n${summary}\n\n${benchmarkSummary}\n`, "utf8");
 }
