@@ -26,11 +26,13 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Restore alert history
+      - name: Restore alert history and encrypted PlayMCP session
         id: alert-cache
         uses: actions/cache/restore@v4
         with:
-          path: .github/career-alert-state.json
+          path: |
+            .github/career-alert-state.json
+            .github/secure-cache/mcporter-credentials.enc
           key: career-alert-state-${{ github.run_id }}
           restore-keys: |
             career-alert-state-
@@ -42,8 +44,18 @@ jobs:
           test -n "$MCPORTER_CREDENTIALS_B64" || { echo "Missing MCPORTER_CREDENTIALS_B64 secret"; exit 1; }
           npm install --global mcporter@0.13.0
           mcporter config add mcp-gateway https://playmcp.kakao.com/mcp --auth oauth --scope home
-          mkdir -p "$HOME/.mcporter"
-          printf '%s' "$MCPORTER_CREDENTIALS_B64" | base64 --decode > "$HOME/.mcporter/credentials.json"
+          mkdir -p "$HOME/.mcporter" .github/secure-cache
+          if test -s .github/secure-cache/mcporter-credentials.enc; then
+            if ! openssl enc -d -aes-256-cbc -pbkdf2 \
+              -in .github/secure-cache/mcporter-credentials.enc \
+              -out "$HOME/.mcporter/credentials.json" \
+              -pass env:MCPORTER_CREDENTIALS_B64; then
+              echo "Encrypted credential cache could not be decrypted; using the GitHub Secret seed."
+              printf '%s' "$MCPORTER_CREDENTIALS_B64" | base64 --decode > "$HOME/.mcporter/credentials.json"
+            fi
+          else
+            printf '%s' "$MCPORTER_CREDENTIALS_B64" | base64 --decode > "$HOME/.mcporter/credentials.json"
+          fi
           chmod 600 "$HOME/.mcporter/credentials.json"
 
       - name: Search, rank, and notify new A-grade jobs
@@ -52,9 +64,24 @@ jobs:
           ALERT_STATE_PATH: .github/career-alert-state.json
         run: node .github/scripts/career-alert.mjs
 
-      - name: Save alert history
+      - name: Encrypt refreshed PlayMCP session
+        if: always()
+        env:
+          MCPORTER_CREDENTIALS_B64: ${{ secrets.MCPORTER_CREDENTIALS_B64 }}
+        run: |
+          if test -s "$HOME/.mcporter/credentials.json"; then
+            mkdir -p .github/secure-cache
+            openssl enc -aes-256-cbc -salt -pbkdf2 \
+              -in "$HOME/.mcporter/credentials.json" \
+              -out .github/secure-cache/mcporter-credentials.enc \
+              -pass env:MCPORTER_CREDENTIALS_B64
+          fi
+
+      - name: Save alert history and encrypted PlayMCP session
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: .github/career-alert-state.json
+          path: |
+            .github/career-alert-state.json
+            .github/secure-cache/mcporter-credentials.enc
           key: career-alert-state-${{ github.run_id }}
