@@ -194,6 +194,10 @@ async function searchJobs() {
         successfulCalls += 1;
         search.failures = 0;
       } catch (error) {
+        const authOutput = `${error?.stderr || ""} ${error?.message || ""}`;
+        if (/OAuth authorization required|browser approval/i.test(authOutput)) {
+          throw new Error("PlayMCP OAuth 인증이 만료되었습니다. GitHub Secret의 초기 인증정보를 갱신해야 합니다.", { cause: error });
+        }
         search.failures += 1;
         console.warn(`Saramin search failed (${search.query}, page ${search.page}, attempt ${search.failures})`, error);
         if (search.failures >= 2) search.done = true;
