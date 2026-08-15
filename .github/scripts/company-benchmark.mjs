@@ -121,17 +121,45 @@ function normalizeCompany(value) {
 }
 
 function stripHtml(html) {
-  return decodeHtml(html)
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+  return decodeHtml(removeElementBlocks(removeElementBlocks(html, "script"), "style"))
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function decodeHtml(value) {
-  return value.replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ");
+  const entities = { "&quot;": '"', "&#39;": "'", "&apos;": "'", "&amp;": "&", "&lt;": "<", "&gt;": ">", "&nbsp;": " " };
+  return value.replace(/&(?:quot|#39|apos|amp|lt|gt|nbsp);/gi, (entity) => entities[entity.toLowerCase()] ?? entity);
+}
+
+function removeElementBlocks(html, tagName) {
+  const lower = html.toLowerCase();
+  const opening = `<${tagName}`;
+  const closing = `</${tagName}`;
+  let cursor = 0;
+  let output = "";
+
+  while (cursor < html.length) {
+    const start = findTag(lower, opening, cursor);
+    if (start < 0) return output + html.slice(cursor);
+    output += html.slice(cursor, start);
+    const closeStart = findTag(lower, closing, start + opening.length);
+    if (closeStart < 0) return output;
+    const closeEnd = html.indexOf(">", closeStart + closing.length);
+    if (closeEnd < 0) return output;
+    cursor = closeEnd + 1;
+  }
+  return output;
+}
+
+function findTag(lowerHtml, prefix, fromIndex) {
+  let index = lowerHtml.indexOf(prefix, fromIndex);
+  while (index >= 0) {
+    const boundary = lowerHtml[index + prefix.length];
+    if (boundary === undefined || /[\s/>]/.test(boundary)) return index;
+    index = lowerHtml.indexOf(prefix, index + prefix.length);
+  }
+  return -1;
 }
 
 async function fetchText(url) {
