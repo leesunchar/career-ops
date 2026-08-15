@@ -63,25 +63,28 @@ export async function scrapeCompanyMetrics(company, companyUrl) {
 }
 
 export function compareWithMks(company, benchmark) {
-  const companyGrowth = growthAverage(company);
-  const benchmarkGrowth = growthAverage(benchmark);
+  const companyRevenueIncrease = revenueIncreaseEok(company);
+  const benchmarkRevenueIncrease = revenueIncreaseEok(benchmark);
   const salaryWin = company.averageSalaryManwon > benchmark.averageSalaryManwon;
   const revenueWin = company.revenueEok > benchmark.revenueEok;
   const operatingProfitWin = company.operatingProfitEok > benchmark.operatingProfitEok;
   const employeeWin = company.employees > benchmark.employees;
-  const growthWin = companyGrowth > benchmarkGrowth;
+  const revenueIncreaseWin = companyRevenueIncrease > benchmarkRevenueIncrease;
   const scaleWins = [revenueWin, operatingProfitWin, employeeWin].filter(Boolean).length;
-  const wins = [salaryWin, revenueWin, operatingProfitWin, employeeWin, growthWin].filter(Boolean).length;
+  const wins = [salaryWin, revenueWin, operatingProfitWin, employeeWin, revenueIncreaseWin].filter(Boolean).length;
   return {
     benchmarkCompany: "엠케이에스코리아",
     salaryDeltaPct: deltaPercent(company.averageSalaryManwon, benchmark.averageSalaryManwon),
     revenueDeltaPct: deltaPercent(company.revenueEok, benchmark.revenueEok),
     operatingProfitDeltaPct: deltaPercent(company.operatingProfitEok, benchmark.operatingProfitEok),
+    operatingProfitDeltaEok: round(company.operatingProfitEok - benchmark.operatingProfitEok),
     employeeDeltaPct: deltaPercent(company.employees, benchmark.employees),
-    growthDeltaPctPoint: round(companyGrowth - benchmarkGrowth),
+    revenueIncreaseEok: companyRevenueIncrease,
+    benchmarkRevenueIncreaseEok: benchmarkRevenueIncrease,
+    revenueIncreaseDeltaEok: round(companyRevenueIncrease - benchmarkRevenueIncrease),
     wins,
     scaleWins,
-    qualified: scaleWins >= 2 && wins >= 3 && (salaryWin || growthWin),
+    qualified: scaleWins >= 2 && wins >= 3 && (salaryWin || revenueIncreaseWin),
   };
 }
 
@@ -96,18 +99,19 @@ export function salaryConditionScore(metrics, benchmark) {
 }
 
 export function companyGrowthScore(metrics, benchmark) {
-  const scaleRatio = (
-    cappedRatio(metrics.revenueEok, benchmark.revenueEok)
-    + cappedRatio(metrics.operatingProfitEok, benchmark.operatingProfitEok)
-    + cappedRatio(metrics.employees, benchmark.employees)
-  ) / 3;
-  const growthDelta = growthAverage(metrics) - growthAverage(benchmark);
-  const momentum = growthDelta >= 20 ? 5 : growthDelta >= 10 ? 4.7 : growthDelta > 0 ? 4.3 : growthDelta >= -10 ? 3.8 : 3.3;
-  return round(Math.min(5, scaleRatio * 0.7 + momentum * 0.3));
+  const profitAmountScore = cappedRatio(metrics.operatingProfitEok, benchmark.operatingProfitEok);
+  const revenueIncreaseScore = cappedRatio(revenueIncreaseEok(metrics), revenueIncreaseEok(benchmark));
+  return round((profitAmountScore + revenueIncreaseScore) / 2);
 }
 
 export function comparisonSummary(comparison) {
-  return `MKS 대비 연봉 ${signed(comparison.salaryDeltaPct)}%, 영업이익 ${signed(comparison.operatingProfitDeltaPct)}%, 매출 ${signed(comparison.revenueDeltaPct)}%, 직원 ${signed(comparison.employeeDeltaPct)}%, 성장률 ${signed(comparison.growthDeltaPctPoint)}%p · 5개 지표 중 ${comparison.wins}개 우위`;
+  return `MKS 대비 연봉 ${signed(comparison.salaryDeltaPct)}%, 영업이익액 ${signedAmount(comparison.operatingProfitDeltaEok)}억원, 매출 ${signed(comparison.revenueDeltaPct)}%, 직원 ${signed(comparison.employeeDeltaPct)}%, 매출 증가액 ${signedAmount(comparison.revenueIncreaseDeltaEok)}억원 · 5개 지표 중 ${comparison.wins}개 우위`;
+}
+
+export function revenueIncreaseEok(metrics) {
+  const denominator = 100 + metrics.revenueGrowthPct;
+  if (denominator <= 0) return -metrics.revenueEok;
+  return round(metrics.revenueEok * metrics.revenueGrowthPct / denominator);
 }
 
 function normalizeCompany(value) {
@@ -142,11 +146,12 @@ async function fetchText(url) {
 function number(value) { return Number(value.replace(/,/g, "")); }
 function amountEok(eok, manwon) { return round(number(eok) + (manwon ? number(manwon) / 10_000 : 0)); }
 function signedPercent(value, direction) { return /감소/.test(direction) ? -Number(value) : Number(value); }
-function growthAverage(metrics) { return (metrics.revenueGrowthPct + metrics.operatingProfitGrowthPct) / 2; }
 function deltaPercent(value, baseline) { return round(((value / baseline) - 1) * 100); }
 function round(value) { return Math.round(value * 10) / 10; }
 function signed(value) { return value > 0 ? `+${value.toFixed(1)}` : value.toFixed(1); }
+function signedAmount(value) { return value > 0 ? `+${value.toLocaleString("ko-KR")}` : value.toLocaleString("ko-KR"); }
 function cappedRatio(value, baseline) {
+  if (baseline <= 0) return value > baseline ? 5 : 2.5;
   const ratio = value / baseline;
   if (ratio >= 5) return 5;
   if (ratio >= 3) return 4.8;

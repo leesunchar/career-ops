@@ -280,7 +280,7 @@ async function searchJobs() {
 }
 
 function alertMessage(job, fallback = false) {
-  const suffix = `\n${job.score.toFixed(1)}점 · MKS 대비 ${job.companyComparison.wins}/5 우위 · ${job.deadline || "마감일 확인"}\n${job.url}`;
+  const suffix = `\n${job.score.toFixed(1)}점 · 영업이익 ${job.companyMetrics.operatingProfitEok.toLocaleString("ko-KR")}억 · 매출증가액 ${job.companyComparison.revenueIncreaseEok.toLocaleString("ko-KR")}억\n${job.url}`;
   const prefix = fallback ? `[MKS 상위 채용 중]\n${job.company}\n` : `[MKS 상위 신규 공고]\n${job.company}\n`;
   const available = Math.max(12, 200 - prefix.length - suffix.length);
   const title = job.title.length > available ? `${job.title.slice(0, available - 1)}…` : job.title;
