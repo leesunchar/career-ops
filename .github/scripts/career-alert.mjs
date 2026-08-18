@@ -11,6 +11,7 @@ import {
   companyGrowthScore,
   comparisonSummary,
 } from "./company-benchmark.mjs";
+import { fetchJobKoreaJobs } from "./jobkorea.mjs";
 
 const execFileAsync = promisify(execFile);
 const searchQueries = [
@@ -63,6 +64,7 @@ function extractJobs(payload) {
       career,
       location,
       url: `https://saramin.co.kr/zf_user/jobs/relay/view?rec_idx=${action.jobId}`,
+      source: "사람인",
     });
   }
   const uniqueJobs = [...new Map(jobs.map((job) => [job.id, job])).values()];
@@ -169,7 +171,8 @@ async function filterBachelorJobs(jobs, concurrency = 8) {
   const workers = Array.from({ length: Math.min(concurrency, jobs.length) }, async () => {
     while (cursor < jobs.length && Date.now() < deadline) {
       const index = cursor++;
-      results[index] = await fetchEducation(jobs[index]);
+      const job = jobs[index];
+      results[index] = job.education && isBachelorOrHigher(job.education) ? job : await fetchEducation(job);
     }
   });
   await Promise.all(workers);
@@ -228,6 +231,10 @@ async function filterCompaniesAboveMks(jobs, concurrency = 4) {
 }
 
 async function searchJobs() {
+  const jobKoreaPromise = fetchJobKoreaJobs().catch((error) => {
+    console.warn("JobKorea high-tech search failed", error);
+    return [];
+  });
   const jobsById = new Map();
   const startedAt = Date.now();
   let successfulCalls = 0;
@@ -268,20 +275,36 @@ async function searchJobs() {
       search.page += 1;
     }
   }
-  if (!successfulCalls) throw new Error("모든 사람인 검색 호출이 실패했습니다. PlayMCP 인증 또는 서비스 상태를 확인하세요.");
-  const jobs = [...jobsById.values()];
+  const jobKoreaJobs = await jobKoreaPromise;
+  if (!successfulCalls && !jobKoreaJobs.length) throw new Error("사람인과 잡코리아 검색이 모두 실패했습니다. PlayMCP 인증 또는 서비스 상태를 확인하세요.");
+  const saraminJobs = [...jobsById.values()];
+  const jobs = dedupeJobs([...saraminJobs, ...jobKoreaJobs]);
   const targetJobs = jobs.filter((job) => classify(job.title));
   const bachelorJobs = await filterBachelorJobs(targetJobs);
   const { qualified, benchmark, excluded } = await filterCompaniesAboveMks(bachelorJobs);
   const rankedJobs = qualified
     .map(({ job, metrics, comparison }) => rankJob(job, metrics, benchmark, comparison))
     .sort((a, b) => b.score - a.score);
-  return { rankedJobs, excluded, benchmark };
+  return { rankedJobs, excluded, benchmark, sourceCounts: { saramin: saraminJobs.length, jobKorea: jobKoreaJobs.length } };
+}
+
+function normalizeJobKey(value) {
+  return value.toLocaleLowerCase("ko-KR").replace(/㈜|\(주\)|주식회사|[^0-9a-z가-힣]/gi, "");
+}
+
+function dedupeJobs(jobs) {
+  const unique = new Map();
+  for (const job of jobs) {
+    const key = `${normalizeJobKey(job.company)}|${normalizeJobKey(job.title)}`;
+    if (!unique.has(key)) unique.set(key, job);
+  }
+  return [...unique.values()];
 }
 
 function alertMessage(job, fallback = false) {
   const suffix = `\n${job.score.toFixed(1)}점 · 영업이익 ${job.companyMetrics.operatingProfitEok.toLocaleString("ko-KR")}억 · 매출증가액 ${job.companyComparison.revenueIncreaseEok.toLocaleString("ko-KR")}억\n${job.url}`;
-  const prefix = fallback ? `[MKS 상위 채용 중]\n${job.company}\n` : `[MKS 상위 신규 공고]\n${job.company}\n`;
+  const source = job.source || "원본";
+  const prefix = fallback ? `[MKS 상위 채용 중 · ${source}]\n${job.company}\n` : `[MKS 상위 신규 공고 · ${source}]\n${job.company}\n`;
   const available = Math.max(12, 200 - prefix.length - suffix.length);
   const title = job.title.length > available ? `${job.title.slice(0, available - 1)}…` : job.title;
   return `${prefix}${title}${suffix}`.slice(0, 200);
@@ -320,7 +343,7 @@ async function saveState(state) {
   await rename(temporaryPath, statePath);
 }
 
-const { rankedJobs, excluded, benchmark } = await searchJobs();
+const { rankedJobs, excluded, benchmark, sourceCounts } = await searchJobs();
 const aJobs = rankedJobs.filter((job) => job.grade === "A");
 const state = await readState(aJobs);
 const knownIds = new Set(state.notifiedJobIds || []);
@@ -363,8 +386,10 @@ await saveState({
 
 const summary = `CareerOps: ${rankedJobs.length}건 평가, A등급 ${aJobs.length}건, 새 A등급 ${newAJobs.length}건, 채용 중 대체추천 ${fallbackSent}건, 카카오 발송 ${sent}건`;
 const benchmarkSummary = `MKS 기준 제외 ${excluded}건 · 기준 평균연봉 ${benchmark.averageSalaryManwon.toLocaleString("ko-KR")}만원`;
+const sourceSummary = `원본 조회: 사람인 ${sourceCounts.saramin}건 · 잡코리아 ${sourceCounts.jobKorea}건`;
 console.log(summary);
 console.log(benchmarkSummary);
+console.log(sourceSummary);
 if (process.env.GITHUB_STEP_SUMMARY) {
-  await appendFile(process.env.GITHUB_STEP_SUMMARY, `## CareerOps 알림 결과\n\n${summary}\n\n${benchmarkSummary}\n`, "utf8");
+  await appendFile(process.env.GITHUB_STEP_SUMMARY, `## CareerOps 알림 결과\n\n${summary}\n\n${benchmarkSummary}\n\n${sourceSummary}\n`, "utf8");
 }
