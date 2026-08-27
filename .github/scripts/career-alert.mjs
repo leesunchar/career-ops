@@ -25,41 +25,9 @@ const searchCallTimeoutMs = 45_000;
 const educationBudgetMs = 2 * 60 * 1000;
 const companyBudgetMs = 2 * 60 * 1000;
 
-const officialCareerJobs = [
-  {
-    id: "official-asm-4898652101",
-    company: "에이에스엠케이(주)",
-    title: "Engineer I, Field Service",
-    url: "https://www.asm.com/open-vacancies/engineer-i-field-service-4898652101?gh_jid=4898652101",
-    deadline: "채용중",
-    career: "신입·경력 0~3년",
-    location: "경기 화성시",
-    education: "대학교졸업(4년)이상",
-    source: "기업 공식",
-  },
-  {
-    id: "official-lam-200462",
-    company: "램리서치코리아(유)",
-    title: "Laboratory Service Engineer 1",
-    url: "https://opportunities.lamresearch.com/job/Yongin-%EC%8B%A0%EC%9E%85%EA%B2%BD%EB%A0%A5Laboratory-Service-Engineer-for-KTC-R%26D-Center-KR-Y/1402318800/",
-    deadline: "채용중",
-    career: "신입 가능",
-    location: "경기 용인시",
-    education: "대학교졸업(4년)이상",
-    source: "기업 공식",
-  },
-  {
-    id: "official-lam-196920",
-    company: "램리서치코리아(유)",
-    title: "Field Service Engineer (Etch)",
-    url: "https://opportunities.lamresearch.com/job/Pyeongtaek-Field-Service-Engineer-%28%EA%B2%BD%EB%A0%A5Etch%29-KR-P/1373948500/",
-    deadline: "채용중",
-    career: "학사 경력 1년 이상 / 석사 무경력 가능",
-    location: "경기 평택시",
-    education: "대학교졸업(4년)이상",
-    source: "기업 공식",
-  },
-];
+// 기업 공식 공고는 URL·마감·학력·신입 조건을 모두 검증한 뒤에만 추가한다.
+// 마감되었거나 학사 신입이 지원할 수 없는 수동 후보는 정확도를 위해 두지 않는다.
+const officialCareerJobs = [];
 
 const knownCompanyMetrics = [
   {
@@ -145,6 +113,14 @@ function experienceFit(career, title) {
   if (includesAny(text, ["1년", "0~3년", "0-3년", "3년 이하", "5년 이하"])) return 3.8;
   if (includesAny(text, ["경력", "과장", "차장"])) return 1.5;
   return 3.5;
+}
+
+function isNewGraduateEligible(job) {
+  const text = `${job.career || ""} ${job.title || ""}`.replace(/\s+/g, " ");
+  // 학사에게 경력을 요구하면서 석사에게만 무경력을 허용하는 공고는 신입 공고가 아니다.
+  if (/학사[^/|,]{0,30}(?:경력|실무)[^/|,]{0,12}(?:[1-9]\d*\s*년|이상)/i.test(text)) return false;
+  // 제목/경력란에 신입 가능성이 명시된 경우만 통과시킨다. 정보가 없으면 안전하게 제외한다.
+  return /신입|경력\s*무관|경력무관|초보\s*가능|new\s*college\s*grad|new\s*graduate|entry[ -]?level|graduate\s*(?:role|position)|0\s*(?:~|-)\s*\d+\s*년|0\s*(?:년|year)/i.test(text);
 }
 
 function locationScore(location, text) {
@@ -364,12 +340,25 @@ async function searchJobs() {
   const saraminJobs = [...jobsById.values()];
   const jobs = dedupeJobs([...officialJobs, ...saraminJobs, ...jobKoreaJobs]);
   const targetJobs = jobs.filter((job) => classify(job.title));
-  const bachelorJobs = await filterBachelorJobs(targetJobs);
+  const newGraduateJobs = targetJobs.filter(isNewGraduateEligible);
+  const bachelorJobs = await filterBachelorJobs(newGraduateJobs);
   const { qualified, benchmark, excluded } = await filterCompaniesAboveMks(bachelorJobs);
   const rankedJobs = qualified
     .map(({ job, metrics, comparison }) => rankJob(job, metrics, benchmark, comparison))
     .sort((a, b) => b.score - a.score);
-  return { rankedJobs, excluded, benchmark, sourceCounts: { saramin: saraminJobs.length, jobKorea: jobKoreaJobs.length, official: officialJobs.length } };
+  return {
+    rankedJobs,
+    excluded,
+    benchmark,
+    sourceCounts: {
+      saramin: saraminJobs.length,
+      jobKorea: jobKoreaJobs.length,
+      official: officialJobs.length,
+      targetRole: targetJobs.length,
+      newGraduate: newGraduateJobs.length,
+      bachelorOrHigher: bachelorJobs.length,
+    },
+  };
 }
 
 function normalizeJobKey(value) {
@@ -470,7 +459,7 @@ await saveState({
 
 const summary = `CareerOps: ${rankedJobs.length}건 평가, A등급 ${aJobs.length}건, 새 A등급 ${newAJobs.length}건, 채용 중 대체추천 ${fallbackSent}건, 카카오 발송 ${sent}건`;
 const benchmarkSummary = `MKS 기준 제외 ${excluded}건 · 기준 평균연봉 ${benchmark.averageSalaryManwon.toLocaleString("ko-KR")}만원`;
-const sourceSummary = `원본 조회: 사람인 ${sourceCounts.saramin}건 · 잡코리아 ${sourceCounts.jobKorea}건 · 기업 공식 ${sourceCounts.official}건`;
+const sourceSummary = `원본 조회: 사람인 ${sourceCounts.saramin}건 · 잡코리아 ${sourceCounts.jobKorea}건 · 기업 공식 ${sourceCounts.official}건 · 대상직무 ${sourceCounts.targetRole}건 · 신입명시 ${sourceCounts.newGraduate}건 · 대졸이상 ${sourceCounts.bachelorOrHigher}건`;
 console.log(summary);
 console.log(benchmarkSummary);
 console.log(sourceSummary);
