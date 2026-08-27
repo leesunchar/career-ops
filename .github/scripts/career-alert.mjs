@@ -25,6 +25,63 @@ const searchCallTimeoutMs = 45_000;
 const educationBudgetMs = 2 * 60 * 1000;
 const companyBudgetMs = 2 * 60 * 1000;
 
+const officialCareerJobs = [
+  {
+    id: "official-asm-4898652101",
+    company: "에이에스엠케이(주)",
+    title: "Engineer I, Field Service",
+    url: "https://www.asm.com/open-vacancies/engineer-i-field-service-4898652101?gh_jid=4898652101",
+    deadline: "채용중",
+    career: "신입·경력 0~3년",
+    location: "경기 화성시",
+    education: "대학교졸업(4년)이상",
+    source: "기업 공식",
+  },
+  {
+    id: "official-lam-200462",
+    company: "램리서치코리아(유)",
+    title: "Laboratory Service Engineer 1",
+    url: "https://opportunities.lamresearch.com/job/Yongin-%EC%8B%A0%EC%9E%85%EA%B2%BD%EB%A0%A5Laboratory-Service-Engineer-for-KTC-R%26D-Center-KR-Y/1402318800/",
+    deadline: "채용중",
+    career: "신입 가능",
+    location: "경기 용인시",
+    education: "대학교졸업(4년)이상",
+    source: "기업 공식",
+  },
+  {
+    id: "official-lam-196920",
+    company: "램리서치코리아(유)",
+    title: "Field Service Engineer (Etch)",
+    url: "https://opportunities.lamresearch.com/job/Pyeongtaek-Field-Service-Engineer-%28%EA%B2%BD%EB%A0%A5Etch%29-KR-P/1373948500/",
+    deadline: "채용중",
+    career: "학사 경력 1년 이상 / 석사 무경력 가능",
+    location: "경기 평택시",
+    education: "대학교졸업(4년)이상",
+    source: "기업 공식",
+  },
+];
+
+const knownCompanyMetrics = [
+  {
+    match: /에이에스엠케이|asm\s*korea/i,
+    metrics: {
+      company: "에이에스엠케이(주)", averageSalaryManwon: 9794, revenueEok: 4724.348,
+      operatingProfitEok: 591.3447, employees: 557, revenueGrowthPct: 0.7,
+      operatingProfitGrowthPct: 12.5, financialYear: 2025, salaryYear: 2024,
+      sourceUrl: "https://www.saramin.co.kr/zf_user/company-info/view-inner-finance?csn=QTFubWVwbDMrYXFwQUZLSmJ0M0NSdz09",
+    },
+  },
+  {
+    match: /램리서치코리아|lam\s*research\s*korea/i,
+    metrics: {
+      company: "램리서치코리아(유)", averageSalaryManwon: 10063, revenueEok: 14643.265,
+      operatingProfitEok: 1836, employees: 157, revenueGrowthPct: 19.8,
+      operatingProfitGrowthPct: 0, financialYear: 2025, salaryYear: 2024,
+      sourceUrl: "https://m.saramin.co.kr/job-search/company-info-view/salary?csn=YWJCZ3B6YVVTcmJxWEgwZUJETzczQT09",
+    },
+  },
+];
+
 const includesAny = (text, values) => {
   const normalized = text.toLocaleLowerCase("ko-KR");
   return values.some((value) => normalized.includes(value.toLocaleLowerCase("ko-KR")));
@@ -195,11 +252,33 @@ async function callMcporter(tool, args) {
 }
 
 async function resolveCompanyMetrics(company) {
+  const known = knownCompanyMetrics.find((entry) => entry.match.test(company))?.metrics || null;
+  if (known) return known;
   const result = await callMcporter("SaraminMcp-search_company_info", {
     request: { searchWord: company, page: 1, pageCount: 5, sort: "Relation" },
   });
   const companyUrl = extractCompanyInfoUrl(result, company);
   return companyUrl ? scrapeCompanyMetrics(company, companyUrl) : null;
+}
+
+async function loadActiveOfficialJobs() {
+  const checked = await Promise.all(officialCareerJobs.map(async (job) => {
+    try {
+      const response = await fetch(job.url, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; CareerOps/1.0)" },
+        redirect: "follow",
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) return null;
+      const html = await response.text();
+      if (/position has been filled|position is no longer available|job is no longer available|채용이 마감/i.test(html)) return null;
+      if (/opportunities\.lamresearch\.com/i.test(response.url) && !/apply now/i.test(html)) return null;
+      return job;
+    } catch {
+      return null;
+    }
+  }));
+  return checked.filter(Boolean);
 }
 
 async function filterCompaniesAboveMks(jobs, concurrency = 4) {
@@ -233,6 +312,10 @@ async function filterCompaniesAboveMks(jobs, concurrency = 4) {
 async function searchJobs() {
   const jobKoreaPromise = fetchJobKoreaJobs().catch((error) => {
     console.warn("JobKorea high-tech search failed", error);
+    return [];
+  });
+  const officialJobsPromise = loadActiveOfficialJobs().catch((error) => {
+    console.warn("Official career search failed", error);
     return [];
   });
   const jobsById = new Map();
@@ -276,16 +359,17 @@ async function searchJobs() {
     }
   }
   const jobKoreaJobs = await jobKoreaPromise;
-  if (!successfulCalls && !jobKoreaJobs.length) throw new Error("사람인과 잡코리아 검색이 모두 실패했습니다. PlayMCP 인증 또는 서비스 상태를 확인하세요.");
+  const officialJobs = await officialJobsPromise;
+  if (!successfulCalls && !jobKoreaJobs.length && !officialJobs.length) throw new Error("사람인·잡코리아·기업 공식 채용사이트 검색이 모두 실패했습니다.");
   const saraminJobs = [...jobsById.values()];
-  const jobs = dedupeJobs([...saraminJobs, ...jobKoreaJobs]);
+  const jobs = dedupeJobs([...officialJobs, ...saraminJobs, ...jobKoreaJobs]);
   const targetJobs = jobs.filter((job) => classify(job.title));
   const bachelorJobs = await filterBachelorJobs(targetJobs);
   const { qualified, benchmark, excluded } = await filterCompaniesAboveMks(bachelorJobs);
   const rankedJobs = qualified
     .map(({ job, metrics, comparison }) => rankJob(job, metrics, benchmark, comparison))
     .sort((a, b) => b.score - a.score);
-  return { rankedJobs, excluded, benchmark, sourceCounts: { saramin: saraminJobs.length, jobKorea: jobKoreaJobs.length } };
+  return { rankedJobs, excluded, benchmark, sourceCounts: { saramin: saraminJobs.length, jobKorea: jobKoreaJobs.length, official: officialJobs.length } };
 }
 
 function normalizeJobKey(value) {
@@ -386,7 +470,7 @@ await saveState({
 
 const summary = `CareerOps: ${rankedJobs.length}건 평가, A등급 ${aJobs.length}건, 새 A등급 ${newAJobs.length}건, 채용 중 대체추천 ${fallbackSent}건, 카카오 발송 ${sent}건`;
 const benchmarkSummary = `MKS 기준 제외 ${excluded}건 · 기준 평균연봉 ${benchmark.averageSalaryManwon.toLocaleString("ko-KR")}만원`;
-const sourceSummary = `원본 조회: 사람인 ${sourceCounts.saramin}건 · 잡코리아 ${sourceCounts.jobKorea}건`;
+const sourceSummary = `원본 조회: 사람인 ${sourceCounts.saramin}건 · 잡코리아 ${sourceCounts.jobKorea}건 · 기업 공식 ${sourceCounts.official}건`;
 console.log(summary);
 console.log(benchmarkSummary);
 console.log(sourceSummary);
