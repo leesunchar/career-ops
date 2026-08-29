@@ -62,6 +62,39 @@ export async function scrapeCompanyMetrics(company, companyUrl) {
   }
 }
 
+export async function scrapeJobKoreaCompanyMetrics(company, companyUrl) {
+  try {
+    const profileUrl = new URL(companyUrl, "https://www.jobkorea.co.kr");
+    const profileMatch = profileUrl.pathname.match(/^\/company\/(\d+)/i);
+    if (!profileMatch) return null;
+    const canonicalUrl = `https://www.jobkorea.co.kr/company/${profileMatch[1]}/`;
+    const [mainHtml, salaryHtml] = await Promise.all([
+      fetchText(canonicalUrl),
+      fetchText(`${canonicalUrl}salary`),
+    ]);
+    const salary = salaryHtml.match(/평균연봉\s*([\d,]+)\s*만원/i);
+    const salaryYear = salaryHtml.match(/(20\d{2})년\s*기준/i);
+    const employees = mainHtml.match(/<th[^>]*>\s*사원수\s*<\/th>[\s\S]{0,900}?<div class=["']value["']>\s*([\d,]+)\s*명/i);
+    const revenue = extractJobKoreaFinancial(mainHtml, "매출액");
+    const operatingProfit = extractJobKoreaFinancial(mainHtml, "영업이익");
+    if (!salary || !employees || !revenue || !operatingProfit) return null;
+    return {
+      company,
+      averageSalaryManwon: number(salary[1]),
+      employees: number(employees[1]),
+      revenueEok: revenue.amountEok,
+      operatingProfitEok: operatingProfit.amountEok,
+      revenueGrowthPct: revenue.growthPct,
+      operatingProfitGrowthPct: operatingProfit.growthPct,
+      financialYear: revenue.year,
+      salaryYear: salaryYear ? Number(salaryYear[1]) : undefined,
+      sourceUrl: canonicalUrl,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function compareWithMks(company, benchmark) {
   const companyRevenueIncrease = revenueIncreaseEok(company);
   const benchmarkRevenueIncrease = revenueIncreaseEok(benchmark);
@@ -173,6 +206,31 @@ async function fetchText(url) {
 
 function number(value) { return Number(value.replace(/,/g, "")); }
 function amountEok(eok, manwon) { return round(number(eok) + (manwon ? number(manwon) / 10_000 : 0)); }
+function extractJobKoreaFinancial(html, label) {
+  const heading = new RegExp(`<h3[^>]*>\\s*${label}\\s*<\\/h3>`, "i").exec(html);
+  if (!heading) return null;
+  const nextHeading = html.indexOf('<h3 class="header">', heading.index + heading[0].length);
+  const section = html.slice(heading.index, nextHeading > heading.index ? nextHeading : heading.index + 16_000);
+  const rows = [...section.matchAll(/<th class=["']label["']>\s*(20\d{2})\s*<\/th>[\s\S]{0,300}?<td class=["']value["']>\s*([^<]+?)\s*<\/td>/gi)]
+    .map((match) => ({ year: Number(match[1]), amountEok: koreanAmountToEok(match[2]) }))
+    .filter((row) => Number.isFinite(row.amountEok))
+    .sort((a, b) => a.year - b.year);
+  if (!rows.length) return null;
+  const latest = rows.at(-1);
+  const previous = rows.at(-2);
+  const growthPct = previous && previous.amountEok !== 0
+    ? round(((latest.amountEok - previous.amountEok) / Math.abs(previous.amountEok)) * 100)
+    : 0;
+  return { ...latest, growthPct };
+}
+function koreanAmountToEok(value) {
+  const normalized = decodeHtml(value).replace(/,/g, "").replace(/\s+/g, " ");
+  const sign = /-/.test(normalized) ? -1 : 1;
+  const jo = Number(normalized.match(/([\d.]+)\s*조/)?.[1] || 0) * 10_000;
+  const eok = Number(normalized.match(/([\d.]+)\s*억/)?.[1] || 0);
+  const manwon = Number(normalized.match(/([\d.]+)\s*만/)?.[1] || 0) / 10_000;
+  return round(sign * (jo + eok + manwon));
+}
 function signedPercent(value, direction) { return /감소/.test(direction) ? -Number(value) : Number(value); }
 function deltaPercent(value, baseline) { return round(((value / baseline) - 1) * 100); }
 function round(value) { return Math.round(value * 10) / 10; }

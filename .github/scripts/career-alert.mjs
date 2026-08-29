@@ -7,6 +7,7 @@ import {
   compareWithMks,
   extractCompanyInfoUrl,
   scrapeCompanyMetrics,
+  scrapeJobKoreaCompanyMetrics,
   salaryConditionScore,
   companyGrowthScore,
   comparisonSummary,
@@ -38,6 +39,7 @@ const officialCareerJobs = [
     career: "신입·경력 0~3년",
     location: "경기 평택시",
     education: "대학교졸업(4년)이상",
+    industry: "반도체 장비",
     source: "기업 공식",
   },
   {
@@ -49,6 +51,7 @@ const officialCareerJobs = [
     career: "신입",
     location: "경기 용인시 기흥구",
     education: "대졸(4년)이상",
+    industry: "반도체 장비",
     source: "사람인 원문",
   },
 ];
@@ -140,6 +143,10 @@ function classify(title) {
   return null;
 }
 
+function isSemiconductorJob(job) {
+  return /반도체|semiconductor|wafer|fab|웨이퍼|디스플레이|display/i.test(`${job.company} ${job.title} ${job.industry || ""}`);
+}
+
 function experienceFit(career, title) {
   const text = `${career} ${title}`;
   if (includesAny(text, ["신입", "경력무관", "경력 무관", "초보 가능"])) return 5.0;
@@ -153,7 +160,7 @@ function isNewGraduateEligible(job) {
   // 학사에게 경력을 요구하면서 석사에게만 무경력을 허용하는 공고는 신입 공고가 아니다.
   if (/학사[^/|,]{0,30}(?:경력|실무)[^/|,]{0,12}(?:[1-9]\d*\s*년|이상)/i.test(text)) return false;
   // 제목/경력란에 신입 가능성이 명시된 경우만 통과시킨다. 정보가 없으면 안전하게 제외한다.
-  return /신입|경력\s*무관|경력무관|초보\s*가능|new\s*college\s*grad|new\s*graduate|entry[ -]?level|graduate\s*(?:role|position)|0\s*(?:~|-)\s*\d+\s*년|0\s*(?:년|year)/i.test(text);
+  return /신입|경력\s*무관|경력무관|초보\s*가능|new\s*college\s*grad|new\s*graduate|entry[ -]?level|graduate\s*(?:role|position)|(?:^|[^0-9])0\s*(?:~|-)\s*\d+\s*년|(?:^|[^0-9])0\s*(?:년|year)/i.test(text);
 }
 
 function locationScore(location, text) {
@@ -203,11 +210,16 @@ function decodeHtml(value) {
     .replace(/&gt;/g, ">");
 }
 
-function extractEducation(html) {
+function extractJobMeta(html) {
   const description = html.match(/<meta\s+(?:name|property)=["'](?:description|og:description)["']\s+content=["']([^"']+)["']/i)?.[1]
     ?? html.match(/<meta\s+content=["']([^"']+)["']\s+(?:name|property)=["'](?:description|og:description)["']/i)?.[1];
   const source = decodeHtml(description || html.replace(/<[^>]+>/g, " "));
-  return source.match(/학력\s*:\s*([^,|<]{1,50})/i)?.[1]?.trim() || null;
+  return {
+    education: source.match(/학력\s*:\s*([^,|<]{1,50})/i)?.[1]?.trim() || null,
+    career: source.match(/경력\s*:\s*([^,|<]{1,50})/i)?.[1]?.trim() || null,
+    deadline: source.match(/마감일\s*:\s*((?:20\d{2}[.\-/]\d{1,2}[.\-/]\d{1,2})|채용시|상시채용?)/i)?.[1]?.trim() || null,
+    companyInfoUrl: decodeHtml(html.match(/href=["'](https?:\/\/www\.jobkorea\.co\.kr\/company\/\d+[^"']*)["']/i)?.[1] || "") || null,
+  };
 }
 
 function isBachelorOrHigher(education) {
@@ -223,8 +235,15 @@ async function fetchEducation(job) {
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) return null;
-    const education = extractEducation(await response.text());
-    return isBachelorOrHigher(education) ? { ...job, education } : null;
+    const meta = extractJobMeta(await response.text());
+    const enriched = {
+      ...job,
+      ...(meta.education ? { education: meta.education } : {}),
+      ...(meta.career ? { career: meta.career } : {}),
+      ...(meta.deadline ? { deadline: meta.deadline } : {}),
+      ...(meta.companyInfoUrl ? { companyInfoUrl: meta.companyInfoUrl } : {}),
+    };
+    return isBachelorOrHigher(meta.education) && isActiveJob(enriched) ? enriched : null;
   } catch {
     return null;
   }
@@ -278,14 +297,20 @@ async function callMcporterWithRetry(tool, args, attempts = 3) {
   throw lastError;
 }
 
-async function resolveCompanyMetrics(company) {
+async function resolveCompanyMetrics(company, jobKoreaCompanyUrl) {
   const known = knownCompanyMetrics.find((entry) => entry.match.test(company))?.metrics || null;
   if (known) return known;
-  const result = await callMcporter("SaraminMcp-search_company_info", {
-    request: { searchWord: company, page: 1, pageCount: 5, sort: "Relation" },
-  });
-  const companyUrl = extractCompanyInfoUrl(result, company);
-  return companyUrl ? scrapeCompanyMetrics(company, companyUrl) : null;
+  try {
+    const result = await callMcporter("SaraminMcp-search_company_info", {
+      request: { searchWord: company, page: 1, pageCount: 5, sort: "Relation" },
+    });
+    const companyUrl = extractCompanyInfoUrl(result, company);
+    const metrics = companyUrl ? await scrapeCompanyMetrics(company, companyUrl) : null;
+    if (metrics) return metrics;
+  } catch (error) {
+    console.warn(`Saramin company benchmark lookup failed (${company})`, error);
+  }
+  return jobKoreaCompanyUrl ? scrapeJobKoreaCompanyMetrics(company, jobKoreaCompanyUrl) : null;
 }
 
 async function loadActiveOfficialJobs() {
@@ -315,13 +340,14 @@ async function filterCompaniesAboveMks(jobs, concurrency = 4) {
   if (liveBenchmark) benchmark = liveBenchmark;
 
   const companies = [...new Set(jobs.map((job) => job.company))];
+  const jobKoreaUrlByCompany = new Map(jobs.filter((job) => job.companyInfoUrl).map((job) => [job.company, job.companyInfoUrl]));
   const metricsByCompany = new Map();
   const deadline = Date.now() + companyBudgetMs;
   let cursor = 0;
   const workers = Array.from({ length: Math.min(concurrency, companies.length) }, async () => {
     while (cursor < companies.length && Date.now() < deadline) {
       const company = companies[cursor++];
-      const metrics = await resolveCompanyMetrics(company).catch(() => null);
+      const metrics = await resolveCompanyMetrics(company, jobKoreaUrlByCompany.get(company)).catch(() => null);
       if (metrics) metricsByCompany.set(company, metrics);
     }
   });
@@ -406,9 +432,9 @@ async function searchJobs() {
   if (!successfulCalls && !jobKoreaJobs.length && !officialJobs.length) throw new Error("사람인·잡코리아·기업 공식 채용사이트 검색이 모두 실패했습니다.");
   const saraminJobs = [...jobsById.values()];
   const jobs = dedupeJobs([...officialJobs, ...saraminJobs, ...jobKoreaJobs]);
-  const targetJobs = jobs.filter((job) => classify(job.title));
+  const targetJobs = jobs.filter((job) => isSemiconductorJob(job) && classify(job.title));
   const newGraduateJobs = targetJobs.filter(isNewGraduateEligible);
-  const bachelorJobs = await filterBachelorJobs(newGraduateJobs);
+  const bachelorJobs = (await filterBachelorJobs(newGraduateJobs)).filter(isNewGraduateEligible);
   const { qualified, benchmark, excluded, unverified, belowBenchmark } = await filterCompaniesAboveMks(bachelorJobs);
   if (bachelorJobs.length && unverified === bachelorJobs.length) {
     throw new Error(`회사 재무정보 조회가 전부 실패했습니다 (${unverified}건). 0건 성공으로 처리하지 않고 다음 예약 실행에서 재시도합니다.`);
