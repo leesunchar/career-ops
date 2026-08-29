@@ -7,6 +7,7 @@ import {
   compareWithMks,
   extractCompanyInfoUrl,
   scrapeCompanyMetrics,
+  scrapeJobKoreaCompanyMetrics,
   salaryConditionScore,
   companyGrowthScore,
   comparisonSummary,
@@ -18,12 +19,72 @@ const searchQueries = [
   "반도체 공정", "공정 엔지니어", "반도체 장비", "CS 엔지니어", "FSE", "Field Service Engineer",
   "대기업 반도체 공정", "외국계 반도체 FSE", "ASML FSE", "Applied Materials FSE", "Lam Research FSE",
   "KLA FSE", "도쿄일렉트론 CS", "세메스 공정", "삼성전자 공정", "SK하이닉스 공정",
+  "주성엔지니어링 C/S", "ASM Korea Field Service", "원익IPS CS", "한화세미텍 CS",
 ];
 const statePath = path.resolve(process.env.ALERT_STATE_PATH || ".github/career-alert-state.json");
 const searchBudgetMs = 6 * 60 * 1000;
 const searchCallTimeoutMs = 45_000;
 const educationBudgetMs = 2 * 60 * 1000;
 const companyBudgetMs = 2 * 60 * 1000;
+
+// 검색 제공자가 일시 장애여도 놓치면 안 되는 검증된 공식/원문 공고입니다.
+// 매 실행마다 URL 응답과 마감 문구를 다시 확인하므로 만료된 공고는 자동 제외됩니다.
+const officialCareerJobs = [
+  {
+    id: "official-asm-4938903101",
+    company: "에이에스엠케이(주)",
+    title: "Engineer I, Field Service",
+    url: "https://www.asm.com/open-vacancies/engineer-i-field-service-4938903101?gh_jid=4938903101",
+    deadline: "채용중",
+    career: "신입·경력 0~3년",
+    location: "경기 평택시",
+    education: "대학교졸업(4년)이상",
+    industry: "반도체 장비",
+    source: "기업 공식",
+  },
+  {
+    id: "saramin-54796549",
+    company: "주성엔지니어링(주)",
+    title: "[수시채용] 2026년 8월 신입 Engineer(R&D, C/S, 제조)",
+    url: "https://www.saramin.co.kr/zf_user/jobs/view?rec_idx=54796549",
+    deadline: "2026-08-30",
+    career: "신입",
+    location: "경기 용인시 기흥구",
+    education: "대졸(4년)이상",
+    industry: "반도체 장비",
+    source: "사람인 원문",
+  },
+];
+
+const knownCompanyMetrics = [
+  {
+    match: /에이에스엠케이|asm\s*korea/i,
+    metrics: {
+      company: "에이에스엠케이(주)", averageSalaryManwon: 9794, revenueEok: 4724.348,
+      operatingProfitEok: 591.3447, employees: 557, revenueGrowthPct: 0.7,
+      operatingProfitGrowthPct: 12.5, financialYear: 2025, salaryYear: 2024,
+      sourceUrl: "https://www.saramin.co.kr/zf_user/company-info/view-inner-finance?csn=QTFubWVwbDMrYXFwQUZLSmJ0M0NSdz09",
+    },
+  },
+  {
+    match: /주성엔지니어링|jusung/i,
+    metrics: {
+      company: "주성엔지니어링(주)", averageSalaryManwon: 9292, revenueEok: 3106.9259,
+      operatingProfitEok: 321.3123, employees: 485, revenueGrowthPct: -24.1,
+      operatingProfitGrowthPct: -67.3, financialYear: 2025, salaryYear: 2025,
+      sourceUrl: "https://www.jobkorea.co.kr/company/1511264",
+    },
+  },
+  {
+    match: /램리서치코리아|lam\s*research\s*korea/i,
+    metrics: {
+      company: "램리서치코리아(유)", averageSalaryManwon: 10063, revenueEok: 14643.265,
+      operatingProfitEok: 1836, employees: 157, revenueGrowthPct: 19.8,
+      operatingProfitGrowthPct: 0, financialYear: 2025, salaryYear: 2024,
+      sourceUrl: "https://m.saramin.co.kr/job-search/company-info-view/salary?csn=YWJCZ3B6YVVTcmJxWEgwZUJETzczQT09",
+    },
+  },
+];
 
 const includesAny = (text, values) => {
   const normalized = text.toLocaleLowerCase("ko-KR");
@@ -82,12 +143,24 @@ function classify(title) {
   return null;
 }
 
+function isSemiconductorJob(job) {
+  return /반도체|semiconductor|wafer|fab|웨이퍼|디스플레이|display/i.test(`${job.company} ${job.title} ${job.industry || ""}`);
+}
+
 function experienceFit(career, title) {
   const text = `${career} ${title}`;
   if (includesAny(text, ["신입", "경력무관", "경력 무관", "초보 가능"])) return 5.0;
   if (includesAny(text, ["1년", "0~3년", "0-3년", "3년 이하", "5년 이하"])) return 3.8;
   if (includesAny(text, ["경력", "과장", "차장"])) return 1.5;
   return 3.5;
+}
+
+function isNewGraduateEligible(job) {
+  const text = `${job.career || ""} ${job.title || ""}`.replace(/\s+/g, " ");
+  // 학사에게 경력을 요구하면서 석사에게만 무경력을 허용하는 공고는 신입 공고가 아니다.
+  if (/학사[^/|,]{0,30}(?:경력|실무)[^/|,]{0,12}(?:[1-9]\d*\s*년|이상)/i.test(text)) return false;
+  // 제목/경력란에 신입 가능성이 명시된 경우만 통과시킨다. 정보가 없으면 안전하게 제외한다.
+  return /신입|경력\s*무관|경력무관|초보\s*가능|new\s*college\s*grad|new\s*graduate|entry[ -]?level|graduate\s*(?:role|position)|(?:^|[^0-9])0\s*(?:~|-)\s*\d+\s*년|(?:^|[^0-9])0\s*(?:년|year)/i.test(text);
 }
 
 function locationScore(location, text) {
@@ -137,11 +210,16 @@ function decodeHtml(value) {
     .replace(/&gt;/g, ">");
 }
 
-function extractEducation(html) {
+function extractJobMeta(html) {
   const description = html.match(/<meta\s+(?:name|property)=["'](?:description|og:description)["']\s+content=["']([^"']+)["']/i)?.[1]
     ?? html.match(/<meta\s+content=["']([^"']+)["']\s+(?:name|property)=["'](?:description|og:description)["']/i)?.[1];
   const source = decodeHtml(description || html.replace(/<[^>]+>/g, " "));
-  return source.match(/학력\s*:\s*([^,|<]{1,50})/i)?.[1]?.trim() || null;
+  return {
+    education: source.match(/학력\s*:\s*([^,|<]{1,50})/i)?.[1]?.trim() || null,
+    career: source.match(/경력\s*:\s*([^,|<]{1,50})/i)?.[1]?.trim() || null,
+    deadline: source.match(/마감일\s*:\s*((?:20\d{2}[.\-/]\d{1,2}[.\-/]\d{1,2})|채용시|상시채용?)/i)?.[1]?.trim() || null,
+    companyInfoUrl: decodeHtml(html.match(/href=["'](https?:\/\/www\.jobkorea\.co\.kr\/company\/\d+[^"']*)["']/i)?.[1] || "") || null,
+  };
 }
 
 function isBachelorOrHigher(education) {
@@ -157,8 +235,15 @@ async function fetchEducation(job) {
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) return null;
-    const education = extractEducation(await response.text());
-    return isBachelorOrHigher(education) ? { ...job, education } : null;
+    const meta = extractJobMeta(await response.text());
+    const enriched = {
+      ...job,
+      ...(meta.education ? { education: meta.education } : {}),
+      ...(meta.career ? { career: meta.career } : {}),
+      ...(meta.deadline ? { deadline: meta.deadline } : {}),
+      ...(meta.companyInfoUrl ? { companyInfoUrl: meta.companyInfoUrl } : {}),
+    };
+    return isBachelorOrHigher(meta.education) && isActiveJob(enriched) ? enriched : null;
   } catch {
     return null;
   }
@@ -194,12 +279,59 @@ async function callMcporter(tool, args) {
   return result;
 }
 
-async function resolveCompanyMetrics(company) {
-  const result = await callMcporter("SaraminMcp-search_company_info", {
-    request: { searchWord: company, page: 1, pageCount: 5, sort: "Relation" },
-  });
-  const companyUrl = extractCompanyInfoUrl(result, company);
-  return companyUrl ? scrapeCompanyMetrics(company, companyUrl) : null;
+async function callMcporterWithRetry(tool, args, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await callMcporter(tool, args);
+    } catch (error) {
+      lastError = error;
+      const output = `${error?.stderr || ""} ${error?.message || ""}`;
+      if (/OAuth authorization required|browser approval|invalid_grant/i.test(output)) throw error;
+      if (attempt < attempts) {
+        console.warn(`${tool} transient failure; retrying (${attempt}/${attempts})`);
+        await new Promise((resolve) => setTimeout(resolve, attempt * 5_000));
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function resolveCompanyMetrics(company, jobKoreaCompanyUrl) {
+  const known = knownCompanyMetrics.find((entry) => entry.match.test(company))?.metrics || null;
+  if (known) return known;
+  try {
+    const result = await callMcporter("SaraminMcp-search_company_info", {
+      request: { searchWord: company, page: 1, pageCount: 5, sort: "Relation" },
+    });
+    const companyUrl = extractCompanyInfoUrl(result, company);
+    const metrics = companyUrl ? await scrapeCompanyMetrics(company, companyUrl) : null;
+    if (metrics) return metrics;
+  } catch (error) {
+    console.warn(`Saramin company benchmark lookup failed (${company})`, error);
+  }
+  return jobKoreaCompanyUrl ? scrapeJobKoreaCompanyMetrics(company, jobKoreaCompanyUrl) : null;
+}
+
+async function loadActiveOfficialJobs() {
+  const checked = await Promise.all(officialCareerJobs.map(async (job) => {
+    try {
+      const response = await fetch(job.url, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; CareerOps/1.0)" },
+        redirect: "follow",
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) return null;
+      const html = await response.text();
+      if (/position has been filled|position is no longer available|job is no longer available|채용이 마감/i.test(html)) return null;
+      if (/opportunities\.lamresearch\.com/i.test(response.url) && !/apply now/i.test(html)) return null;
+      if (/asm\.com\/open-vacancies/i.test(response.url) && !/apply now/i.test(html)) return null;
+      return job;
+    } catch {
+      return null;
+    }
+  }));
+  return checked.filter(Boolean);
 }
 
 async function filterCompaniesAboveMks(jobs, concurrency = 4) {
@@ -208,26 +340,33 @@ async function filterCompaniesAboveMks(jobs, concurrency = 4) {
   if (liveBenchmark) benchmark = liveBenchmark;
 
   const companies = [...new Set(jobs.map((job) => job.company))];
+  const jobKoreaUrlByCompany = new Map(jobs.filter((job) => job.companyInfoUrl).map((job) => [job.company, job.companyInfoUrl]));
   const metricsByCompany = new Map();
   const deadline = Date.now() + companyBudgetMs;
   let cursor = 0;
   const workers = Array.from({ length: Math.min(concurrency, companies.length) }, async () => {
     while (cursor < companies.length && Date.now() < deadline) {
       const company = companies[cursor++];
-      const metrics = await resolveCompanyMetrics(company).catch(() => null);
+      const metrics = await resolveCompanyMetrics(company, jobKoreaUrlByCompany.get(company)).catch(() => null);
       if (metrics) metricsByCompany.set(company, metrics);
     }
   });
   await Promise.all(workers);
 
   const qualified = [];
+  let unverified = 0;
+  let belowBenchmark = 0;
   for (const job of jobs) {
     const metrics = metricsByCompany.get(job.company);
-    if (!metrics) continue;
+    if (!metrics) {
+      unverified += 1;
+      continue;
+    }
     const comparison = compareWithMks(metrics, benchmark);
     if (comparison.qualified) qualified.push({ job, metrics, comparison });
+    else belowBenchmark += 1;
   }
-  return { qualified, benchmark, excluded: jobs.length - qualified.length };
+  return { qualified, benchmark, excluded: jobs.length - qualified.length, unverified, belowBenchmark };
 }
 
 async function searchJobs() {
@@ -235,9 +374,15 @@ async function searchJobs() {
     console.warn("JobKorea high-tech search failed", error);
     return [];
   });
+  const officialJobsPromise = loadActiveOfficialJobs().catch((error) => {
+    console.warn("Official career search failed", error);
+    return [];
+  });
   const jobsById = new Map();
   const startedAt = Date.now();
   let successfulCalls = 0;
+  let saraminErrors = 0;
+  let saraminUnavailable = false;
   const searches = searchQueries.map((query) => ({ query, page: 1, done: false, failures: 0, seenIds: new Set() }));
   while (Date.now() - startedAt < searchBudgetMs && searches.some((search) => !search.done)) {
     for (const search of searches.filter((item) => !item.done)) {
@@ -256,6 +401,13 @@ async function searchJobs() {
         const authOutput = `${error?.stderr || ""} ${error?.message || ""}`;
         if (/OAuth authorization required|browser approval/i.test(authOutput)) {
           throw new Error("PlayMCP OAuth 인증이 만료되었습니다. GitHub Secret의 초기 인증정보를 갱신해야 합니다.", { cause: error });
+        }
+        saraminErrors += 1;
+        if (/도구가 존재하지 않거나, 현재 사용할 수 없는 상태|tool.*(?:unavailable|not found)/i.test(authOutput)) {
+          saraminUnavailable = true;
+          searches.forEach((item) => { item.done = true; });
+          console.warn("Saramin MCP is temporarily unavailable; continuing with JobKorea and verified official sources.");
+          break;
         }
         search.failures += 1;
         console.warn(`Saramin search failed (${search.query}, page ${search.page}, attempt ${search.failures})`, error);
@@ -276,16 +428,37 @@ async function searchJobs() {
     }
   }
   const jobKoreaJobs = await jobKoreaPromise;
-  if (!successfulCalls && !jobKoreaJobs.length) throw new Error("사람인과 잡코리아 검색이 모두 실패했습니다. PlayMCP 인증 또는 서비스 상태를 확인하세요.");
+  const officialJobs = await officialJobsPromise;
+  if (!successfulCalls && !jobKoreaJobs.length && !officialJobs.length) throw new Error("사람인·잡코리아·기업 공식 채용사이트 검색이 모두 실패했습니다.");
   const saraminJobs = [...jobsById.values()];
-  const jobs = dedupeJobs([...saraminJobs, ...jobKoreaJobs]);
-  const targetJobs = jobs.filter((job) => classify(job.title));
-  const bachelorJobs = await filterBachelorJobs(targetJobs);
-  const { qualified, benchmark, excluded } = await filterCompaniesAboveMks(bachelorJobs);
+  const jobs = dedupeJobs([...officialJobs, ...saraminJobs, ...jobKoreaJobs]);
+  const targetJobs = jobs.filter((job) => isSemiconductorJob(job) && classify(job.title));
+  const newGraduateJobs = targetJobs.filter(isNewGraduateEligible);
+  const bachelorJobs = (await filterBachelorJobs(newGraduateJobs)).filter(isNewGraduateEligible);
+  const { qualified, benchmark, excluded, unverified, belowBenchmark } = await filterCompaniesAboveMks(bachelorJobs);
+  if (bachelorJobs.length && unverified === bachelorJobs.length) {
+    throw new Error(`회사 재무정보 조회가 전부 실패했습니다 (${unverified}건). 0건 성공으로 처리하지 않고 다음 예약 실행에서 재시도합니다.`);
+  }
   const rankedJobs = qualified
     .map(({ job, metrics, comparison }) => rankJob(job, metrics, benchmark, comparison))
     .sort((a, b) => b.score - a.score);
-  return { rankedJobs, excluded, benchmark, sourceCounts: { saramin: saraminJobs.length, jobKorea: jobKoreaJobs.length } };
+  return {
+    rankedJobs,
+    excluded,
+    benchmark,
+    sourceCounts: {
+      saramin: saraminJobs.length,
+      jobKorea: jobKoreaJobs.length,
+      official: officialJobs.length,
+      targetRole: targetJobs.length,
+      newGraduate: newGraduateJobs.length,
+      bachelorOrHigher: bachelorJobs.length,
+      metricsUnverified: unverified,
+      belowBenchmark,
+      saraminErrors,
+      saraminUnavailable,
+    },
+  };
 }
 
 function normalizeJobKey(value) {
@@ -352,7 +525,7 @@ let sent = 0;
 let fallbackSent = 0;
 
 for (const job of newAJobs) {
-  await callMcporter("KakaotalkChat-MemoChat", { message: alertMessage(job) });
+  await callMcporterWithRetry("KakaotalkChat-MemoChat", { message: alertMessage(job) });
   knownIds.add(job.id);
   sent += 1;
   await saveState({
@@ -370,7 +543,7 @@ if (state.lastFallbackSentDate !== today) {
   const activeJobs = rankedJobs.filter((job) => isActiveJob(job) && !newJobIds.has(job.id));
   const fallbackJobs = (activeAJobs.length ? activeAJobs : activeJobs).slice(0, 3);
   for (const job of fallbackJobs) {
-    await callMcporter("KakaotalkChat-MemoChat", { message: alertMessage(job, true) });
+    await callMcporterWithRetry("KakaotalkChat-MemoChat", { message: alertMessage(job, true) });
     sent += 1;
     fallbackSent += 1;
   }
@@ -380,13 +553,13 @@ await saveState({
   ...state,
   lastCheckedAt: new Date().toISOString(),
   ...(sent ? { lastSentAt: new Date().toISOString() } : {}),
-  ...(fallbackSent ? { lastFallbackSentDate: today } : {}),
+  ...(sent ? { lastFallbackSentDate: today } : {}),
   notifiedJobIds: [...knownIds].slice(-500),
 });
 
 const summary = `CareerOps: ${rankedJobs.length}건 평가, A등급 ${aJobs.length}건, 새 A등급 ${newAJobs.length}건, 채용 중 대체추천 ${fallbackSent}건, 카카오 발송 ${sent}건`;
 const benchmarkSummary = `MKS 기준 제외 ${excluded}건 · 기준 평균연봉 ${benchmark.averageSalaryManwon.toLocaleString("ko-KR")}만원`;
-const sourceSummary = `원본 조회: 사람인 ${sourceCounts.saramin}건 · 잡코리아 ${sourceCounts.jobKorea}건`;
+const sourceSummary = `원본 조회: 사람인 ${sourceCounts.saramin}건(오류 ${sourceCounts.saraminErrors}건${sourceCounts.saraminUnavailable ? ", 일시장애 fallback" : ""}) · 잡코리아 ${sourceCounts.jobKorea}건 · 기업 공식/원문 ${sourceCounts.official}건 · 대상직무 ${sourceCounts.targetRole}건 · 신입명시 ${sourceCounts.newGraduate}건 · 대졸이상 ${sourceCounts.bachelorOrHigher}건 · 재무미확인 ${sourceCounts.metricsUnverified}건 · MKS미달 ${sourceCounts.belowBenchmark}건`;
 console.log(summary);
 console.log(benchmarkSummary);
 console.log(sourceSummary);

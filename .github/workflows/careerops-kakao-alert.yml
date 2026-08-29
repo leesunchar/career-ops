@@ -2,8 +2,11 @@ name: CareerOps A-grade Kakao Alerts
 
 on:
   schedule:
-    # 23:00 UTC = 08:00 Asia/Seoul on the following day
+    # GitHub scheduled jobs can be delayed. Three idempotent attempts around
+    # 08:00 KST reduce missed runs; alert state prevents same-day duplicates.
+    - cron: "55 22 * * *"
     - cron: "0 23 * * *"
+    - cron: "10 23 * * *"
   workflow_dispatch:
 
 permissions:
@@ -18,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     # Installation, search, education verification, and Kakao delivery all share
     # this job budget. Keep it comfortably above the script's own search budget.
-    timeout-minutes: 15
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v4
 
@@ -59,7 +62,7 @@ jobs:
           chmod 600 "$HOME/.mcporter/credentials.json"
 
       - name: Search, rank, and notify new A-grade jobs
-        timeout-minutes: 12
+        timeout-minutes: 15
         env:
           ALERT_STATE_PATH: .github/career-alert-state.json
         run: node .github/scripts/career-alert.mjs
