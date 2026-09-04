@@ -1,5 +1,15 @@
 export const JOBKOREA_HIGH_TECH_URL = "https://www.jobkorea.co.kr/recruit/high-tech";
 export const JOBKOREA_SEARCH_QUERIES = [
+  "반도체 회사 신입 대졸",
+  "반도체 제조업 신입 대졸",
+  "반도체 장비 회사 신입 대졸",
+  "반도체 소재 회사 신입 대졸",
+  "반도체 부품 회사 신입 대졸",
+  "반도체 연구개발 신입 대졸",
+  "반도체 품질 신입 대졸",
+  "반도체 생산 신입 대졸",
+  "반도체 기술영업 신입 대졸",
+  "반도체 경영지원 신입 대졸",
   "반도체 공정 엔지니어",
   "반도체 공정기술 신입",
   "반도체 공정개발 신입",

@@ -30,7 +30,13 @@ const serviceSearchQueries = [
   "ASML FSE", "Applied Materials FSE", "Lam Research FSE", "KLA FSE",
   "도쿄일렉트론 CS", "ASM Korea Field Service", "한화세미텍 CS",
 ];
-const searchQueries = [...processSearchQueries, ...serviceSearchQueries];
+const companyWideSearchQueries = [
+  "반도체 회사 신입 대졸", "반도체 제조업 신입 대졸", "반도체 장비 회사 신입 대졸",
+  "반도체 소재 회사 신입 대졸", "반도체 부품 회사 신입 대졸", "반도체 연구개발 신입 대졸",
+  "반도체 품질 신입 대졸", "반도체 생산 신입 대졸", "반도체 기술영업 신입 대졸",
+  "반도체 경영지원 신입 대졸",
+];
+const searchQueries = [...companyWideSearchQueries, ...processSearchQueries, ...serviceSearchQueries];
 const statePath = path.resolve(process.env.ALERT_STATE_PATH || ".github/career-alert-state.json");
 const searchBudgetMs = 6 * 60 * 1000;
 const searchCallTimeoutMs = 45_000;
@@ -159,31 +165,6 @@ function isSemiconductorJob(job) {
   return /반도체|semiconductor|wafer|fab|웨이퍼|디스플레이|display/i.test(`${job.company} ${job.title} ${job.industry || ""}`);
 }
 
-function balanceByRole(jobs) {
-  const processJobs = jobs.filter((job) => classify(job.title) === "process");
-  const serviceJobs = jobs.filter((job) => classify(job.title) === "cs");
-  const balanced = [];
-  const maxLength = Math.max(processJobs.length, serviceJobs.length);
-  for (let index = 0; index < maxLength; index += 1) {
-    if (processJobs[index]) balanced.push(processJobs[index]);
-    if (serviceJobs[index]) balanced.push(serviceJobs[index]);
-  }
-  return balanced;
-}
-
-function selectBalancedAlerts(jobs, limit = 3) {
-  const selected = [];
-  const processJob = jobs.find((job) => classify(job.title) === "process");
-  const serviceJob = jobs.find((job) => classify(job.title) === "cs");
-  if (processJob) selected.push(processJob);
-  if (serviceJob && !selected.some((job) => job.id === serviceJob.id)) selected.push(serviceJob);
-  for (const job of jobs) {
-    if (selected.length >= limit) break;
-    if (!selected.some((item) => item.id === job.id)) selected.push(job);
-  }
-  return selected.slice(0, limit);
-}
-
 function experienceFit(career, title) {
   const text = `${career} ${title}`;
   if (includesAny(text, ["신입", "경력무관", "경력 무관", "초보 가능"])) return 5.0;
@@ -216,6 +197,7 @@ function locationScore(location, text) {
 
 function rankJob(job, metrics, benchmark, comparison) {
   const cluster = classify(job.title);
+  const roleLabel = cluster === "process" ? "공정 엔지니어" : cluster === "cs" ? "FSE/CS 엔지니어" : "반도체 기업 신입";
   const text = `${job.company} ${job.title} ${job.career} ${job.location}`;
   const conditions = Math.round((locationScore(job.location, text) * 0.35 + salaryConditionScore(metrics, benchmark) * 0.65) * 10) / 10;
   const growth = companyGrowthScore(metrics, benchmark);
@@ -229,9 +211,9 @@ function rankJob(job, metrics, benchmark, comparison) {
     ...job,
     score,
     grade: score >= 80 ? "A" : score >= 65 ? "B" : score >= 50 ? "C" : "D",
-    reason: `${cluster === "process" ? "공정 엔지니어" : "FSE/CS 엔지니어"} · ${comparisonSummary(comparison)}`,
+    reason: `${roleLabel} · ${comparisonSummary(comparison)}`,
     missing: "실제 제안 연봉·성과급·복지는 면접 단계에서 별도 확인 필요",
-    keywords: [cluster === "process" ? "공정 엔지니어" : "FSE/CS", "대졸 이상", "MKS 상위 기업"],
+    keywords: [roleLabel, "대졸 이상", "MKS 상위 기업"],
     breakdown: { experience, conditions, growth },
     companyMetrics: metrics,
     benchmarkMetrics: benchmark,
@@ -456,7 +438,9 @@ async function searchJobs() {
         if (search.failures >= 2) search.done = true;
         continue;
       }
-      const pageJobs = extractJobs(result);
+      const pageJobs = extractJobs(result).map((job) => (
+        /반도체|semiconductor/i.test(search.query) ? { ...job, industry: "반도체" } : job
+      ));
       const unseenJobs = pageJobs.filter((job) => !search.seenIds.has(job.id));
       if (!pageJobs.length || !unseenJobs.length) {
         search.done = true;
@@ -474,8 +458,8 @@ async function searchJobs() {
   if (!successfulCalls && !jobKoreaJobs.length && !officialJobs.length) throw new Error("사람인·잡코리아·기업 공식 채용사이트 검색이 모두 실패했습니다.");
   const saraminJobs = [...jobsById.values()];
   const jobs = dedupeJobs([...officialJobs, ...saraminJobs, ...jobKoreaJobs]);
-  const targetJobs = jobs.filter((job) => isSemiconductorJob(job) && classify(job.title));
-  const newGraduateJobs = balanceByRole(targetJobs.filter(isNewGraduateEligible));
+  const targetJobs = jobs.filter(isSemiconductorJob);
+  const newGraduateJobs = targetJobs.filter(isNewGraduateEligible);
   const bachelorJobs = (await filterBachelorJobs(newGraduateJobs)).filter(isNewGraduateEligible);
   const { qualified, benchmark, excluded, unverified, belowBenchmark } = await filterCompaniesAboveMks(bachelorJobs);
   if (bachelorJobs.length && unverified === bachelorJobs.length) {
@@ -521,7 +505,8 @@ function dedupeJobs(jobs) {
 function alertMessage(job, fallback = false) {
   const suffix = `\n${job.score.toFixed(1)}점 · 영업이익 ${job.companyMetrics.operatingProfitEok.toLocaleString("ko-KR")}억 · 매출증가액 ${job.companyComparison.revenueIncreaseEok.toLocaleString("ko-KR")}억\n${job.url}`;
   const source = job.source || "원본";
-  const role = classify(job.title) === "process" ? "공정" : "CS/FSE";
+  const cluster = classify(job.title);
+  const role = cluster === "process" ? "공정" : cluster === "cs" ? "CS/FSE" : "반도체";
   const prefix = fallback ? `[${role} · MKS 상위 채용 중 · ${source}]\n${job.company}\n` : `[${role} · MKS 상위 신규 · ${source}]\n${job.company}\n`;
   const available = Math.max(12, 200 - prefix.length - suffix.length);
   const title = job.title.length > available ? `${job.title.slice(0, available - 1)}…` : job.title;
@@ -586,7 +571,7 @@ if (state.lastFallbackSentDate !== today) {
   const newJobIds = new Set(newAJobs.map((job) => job.id));
   const activeAJobs = aJobs.filter((job) => isActiveJob(job) && !newJobIds.has(job.id));
   const activeJobs = rankedJobs.filter((job) => isActiveJob(job) && !newJobIds.has(job.id));
-  const fallbackJobs = selectBalancedAlerts(activeAJobs.length ? activeAJobs : activeJobs, 3);
+  const fallbackJobs = (activeAJobs.length ? activeAJobs : activeJobs).slice(0, 3);
   for (const job of fallbackJobs) {
     await callMcporterWithRetry("KakaotalkChat-MemoChat", { message: alertMessage(job, true) });
     sent += 1;
@@ -604,7 +589,7 @@ await saveState({
 
 const summary = `CareerOps: ${rankedJobs.length}건 평가, A등급 ${aJobs.length}건, 새 A등급 ${newAJobs.length}건, 채용 중 대체추천 ${fallbackSent}건, 카카오 발송 ${sent}건`;
 const benchmarkSummary = `MKS 기준 제외 ${excluded}건 · 기준 평균연봉 ${benchmark.averageSalaryManwon.toLocaleString("ko-KR")}만원`;
-const sourceSummary = `원본 조회: 사람인 ${sourceCounts.saramin}건(오류 ${sourceCounts.saraminErrors}건${sourceCounts.saraminUnavailable ? ", 일시장애 fallback" : ""}) · 잡코리아 ${sourceCounts.jobKorea}건 · 기업 공식/원문 ${sourceCounts.official}건 · 대상직무 ${sourceCounts.targetRole}건(공정 ${sourceCounts.processRole} / CS·FSE ${sourceCounts.serviceRole}) · 신입명시 ${sourceCounts.newGraduate}건 · 대졸이상 ${sourceCounts.bachelorOrHigher}건 · 재무미확인 ${sourceCounts.metricsUnverified}건 · MKS미달 ${sourceCounts.belowBenchmark}건`;
+const sourceSummary = `원본 조회: 사람인 ${sourceCounts.saramin}건(오류 ${sourceCounts.saraminErrors}건${sourceCounts.saraminUnavailable ? ", 일시장애 fallback" : ""}) · 잡코리아 ${sourceCounts.jobKorea}건 · 기업 공식/원문 ${sourceCounts.official}건 · 반도체기업 ${sourceCounts.targetRole}건(공정 ${sourceCounts.processRole} / CS·FSE ${sourceCounts.serviceRole} / 기타 ${sourceCounts.targetRole - sourceCounts.processRole - sourceCounts.serviceRole}) · 신입명시 ${sourceCounts.newGraduate}건 · 대졸이상 ${sourceCounts.bachelorOrHigher}건 · 재무미확인 ${sourceCounts.metricsUnverified}건 · MKS미달 ${sourceCounts.belowBenchmark}건`;
 console.log(summary);
 console.log(benchmarkSummary);
 console.log(sourceSummary);
