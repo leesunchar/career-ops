@@ -15,17 +15,33 @@ import {
 import { fetchJobKoreaJobs } from "./jobkorea.mjs";
 
 const execFileAsync = promisify(execFile);
-const searchQueries = [
-  "반도체 공정", "공정 엔지니어", "반도체 장비", "CS 엔지니어", "FSE", "Field Service Engineer",
-  "대기업 반도체 공정", "외국계 반도체 FSE", "ASML FSE", "Applied Materials FSE", "Lam Research FSE",
-  "KLA FSE", "도쿄일렉트론 CS", "세메스 공정", "삼성전자 공정", "SK하이닉스 공정",
-  "주성엔지니어링 C/S", "ASM Korea Field Service", "원익IPS CS", "한화세미텍 CS",
+const processSearchQueries = [
+  "반도체 공정 엔지니어 신입", "반도체 공정기술 신입", "반도체 공정개발 신입",
+  "반도체 생산기술 신입", "반도체 제조기술 신입", "반도체 양산기술 신입",
+  "반도체 수율개선 신입", "반도체 Process Engineer 신입", "반도체 공정 R&D 신입",
+  "반도체 증착 공정 신입", "반도체 식각 공정 신입", "반도체 포토 공정 신입",
+  "반도체 패키징 공정 신입", "반도체 테스트 공정 신입", "대기업 반도체 공정",
+  "삼성전자 공정", "SK하이닉스 공정", "DB하이텍 공정", "SK실트론 공정",
+  "세메스 공정", "원익IPS 공정", "주성엔지니어링 공정",
 ];
+const serviceSearchQueries = [
+  "반도체 장비 엔지니어 신입", "반도체 CS 엔지니어 신입", "반도체 FSE 신입",
+  "반도체 Field Service Engineer 신입", "반도체 Customer Engineer 신입",
+  "ASML FSE", "Applied Materials FSE", "Lam Research FSE", "KLA FSE",
+  "도쿄일렉트론 CS", "ASM Korea Field Service", "한화세미텍 CS",
+];
+const companyWideSearchQueries = [
+  "반도체 회사 신입 대졸", "반도체 제조업 신입 대졸", "반도체 장비 회사 신입 대졸",
+  "반도체 소재 회사 신입 대졸", "반도체 부품 회사 신입 대졸", "반도체 연구개발 신입 대졸",
+  "반도체 품질 신입 대졸", "반도체 생산 신입 대졸", "반도체 기술영업 신입 대졸",
+  "반도체 경영지원 신입 대졸",
+];
+const searchQueries = [...companyWideSearchQueries, ...processSearchQueries, ...serviceSearchQueries];
 const statePath = path.resolve(process.env.ALERT_STATE_PATH || ".github/career-alert-state.json");
 const searchBudgetMs = 6 * 60 * 1000;
 const searchCallTimeoutMs = 45_000;
 const educationBudgetMs = 2 * 60 * 1000;
-const companyBudgetMs = 2 * 60 * 1000;
+const companyBudgetMs = 3 * 60 * 1000;
 
 // 검색 제공자가 일시 장애여도 놓치면 안 되는 검증된 공식/원문 공고입니다.
 // 매 실행마다 URL 응답과 마감 문구를 다시 확인하므로 만료된 공고는 자동 제외됩니다.
@@ -139,7 +155,9 @@ function classify(title) {
   const hasCsWork = includesAny(title, ["셋업", "유지보수", "maintenance", "기술지원", "a/s"]);
   if (/(^|[^a-z])c\/?s([^a-z]|$)|\bfse\b|\bfae\b/i.test(title) || includesAny(title, ["field service", "field engineer", "service engineer", "customer engineer", "application engineer", "장비기술", "장비 기술", "장비 엔지니어", "장비엔지니어", "설비 엔지니어", "고객 기술지원"]) || (hasEquipmentContext && hasCsWork)) return "cs";
   const hasProcessRole = /공정.*(엔지니어|engineer|개발|기술|연구|분석)|(엔지니어|engineer|개발|기술|연구|분석).*공정/i.test(title);
-  if (hasProcessRole || includesAny(title, ["process", "fab", "증착", "식각", "photo", "ald", "pecvd", "pvd", "박막"])) return "process";
+  const hasEnglishProcessRole = /\bprocess\b.{0,30}(engineer|engineering|development|technology)|(engineer|engineering|development|technology).{0,30}\bprocess\b/i.test(title);
+  const hasUnitProcessRole = /(증착|식각|노광|포토|박막|ald|pecvd|pvd).{0,20}(엔지니어|개발|기술|공정)|(엔지니어|개발|기술|공정).{0,20}(증착|식각|노광|포토|박막|ald|pecvd|pvd)/i.test(title);
+  if (hasProcessRole || hasEnglishProcessRole || hasUnitProcessRole) return "process";
   return null;
 }
 
@@ -157,6 +175,7 @@ function experienceFit(career, title) {
 
 function isNewGraduateEligible(job) {
   const text = `${job.career || ""} ${job.title || ""}`.replace(/\s+/g, " ");
+  if (/경력직/i.test(job.title || "") && !/신입/i.test(job.title || "")) return false;
   // 학사에게 경력을 요구하면서 석사에게만 무경력을 허용하는 공고는 신입 공고가 아니다.
   if (/학사[^/|,]{0,30}(?:경력|실무)[^/|,]{0,12}(?:[1-9]\d*\s*년|이상)/i.test(text)) return false;
   // 제목/경력란에 신입 가능성이 명시된 경우만 통과시킨다. 정보가 없으면 안전하게 제외한다.
@@ -178,6 +197,7 @@ function locationScore(location, text) {
 
 function rankJob(job, metrics, benchmark, comparison) {
   const cluster = classify(job.title);
+  const roleLabel = cluster === "process" ? "공정 엔지니어" : cluster === "cs" ? "FSE/CS 엔지니어" : "반도체 기업 신입";
   const text = `${job.company} ${job.title} ${job.career} ${job.location}`;
   const conditions = Math.round((locationScore(job.location, text) * 0.35 + salaryConditionScore(metrics, benchmark) * 0.65) * 10) / 10;
   const growth = companyGrowthScore(metrics, benchmark);
@@ -191,9 +211,9 @@ function rankJob(job, metrics, benchmark, comparison) {
     ...job,
     score,
     grade: score >= 80 ? "A" : score >= 65 ? "B" : score >= 50 ? "C" : "D",
-    reason: `${cluster === "process" ? "공정 엔지니어" : "FSE/CS 엔지니어"} · ${comparisonSummary(comparison)}`,
+    reason: `${roleLabel} · ${comparisonSummary(comparison)}`,
     missing: "실제 제안 연봉·성과급·복지는 면접 단계에서 별도 확인 필요",
-    keywords: [cluster === "process" ? "공정 엔지니어" : "FSE/CS", "대졸 이상", "MKS 상위 기업"],
+    keywords: [roleLabel, "대졸 이상", "MKS 상위 기업"],
     breakdown: { experience, conditions, growth },
     companyMetrics: metrics,
     benchmarkMetrics: benchmark,
@@ -300,6 +320,10 @@ async function callMcporterWithRetry(tool, args, attempts = 3) {
 async function resolveCompanyMetrics(company, jobKoreaCompanyUrl) {
   const known = knownCompanyMetrics.find((entry) => entry.match.test(company))?.metrics || null;
   if (known) return known;
+  if (jobKoreaCompanyUrl) {
+    const jobKoreaMetrics = await scrapeJobKoreaCompanyMetrics(company, jobKoreaCompanyUrl);
+    if (jobKoreaMetrics) return jobKoreaMetrics;
+  }
   try {
     const result = await callMcporter("SaraminMcp-search_company_info", {
       request: { searchWord: company, page: 1, pageCount: 5, sort: "Relation" },
@@ -310,7 +334,7 @@ async function resolveCompanyMetrics(company, jobKoreaCompanyUrl) {
   } catch (error) {
     console.warn(`Saramin company benchmark lookup failed (${company})`, error);
   }
-  return jobKoreaCompanyUrl ? scrapeJobKoreaCompanyMetrics(company, jobKoreaCompanyUrl) : null;
+  return null;
 }
 
 async function loadActiveOfficialJobs() {
@@ -414,7 +438,9 @@ async function searchJobs() {
         if (search.failures >= 2) search.done = true;
         continue;
       }
-      const pageJobs = extractJobs(result);
+      const pageJobs = extractJobs(result).map((job) => (
+        /반도체|semiconductor/i.test(search.query) ? { ...job, industry: "반도체" } : job
+      ));
       const unseenJobs = pageJobs.filter((job) => !search.seenIds.has(job.id));
       if (!pageJobs.length || !unseenJobs.length) {
         search.done = true;
@@ -432,7 +458,7 @@ async function searchJobs() {
   if (!successfulCalls && !jobKoreaJobs.length && !officialJobs.length) throw new Error("사람인·잡코리아·기업 공식 채용사이트 검색이 모두 실패했습니다.");
   const saraminJobs = [...jobsById.values()];
   const jobs = dedupeJobs([...officialJobs, ...saraminJobs, ...jobKoreaJobs]);
-  const targetJobs = jobs.filter((job) => isSemiconductorJob(job) && classify(job.title));
+  const targetJobs = jobs.filter(isSemiconductorJob);
   const newGraduateJobs = targetJobs.filter(isNewGraduateEligible);
   const bachelorJobs = (await filterBachelorJobs(newGraduateJobs)).filter(isNewGraduateEligible);
   const { qualified, benchmark, excluded, unverified, belowBenchmark } = await filterCompaniesAboveMks(bachelorJobs);
@@ -451,6 +477,8 @@ async function searchJobs() {
       jobKorea: jobKoreaJobs.length,
       official: officialJobs.length,
       targetRole: targetJobs.length,
+      processRole: targetJobs.filter((job) => classify(job.title) === "process").length,
+      serviceRole: targetJobs.filter((job) => classify(job.title) === "cs").length,
       newGraduate: newGraduateJobs.length,
       bachelorOrHigher: bachelorJobs.length,
       metricsUnverified: unverified,
@@ -477,7 +505,9 @@ function dedupeJobs(jobs) {
 function alertMessage(job, fallback = false) {
   const suffix = `\n${job.score.toFixed(1)}점 · 영업이익 ${job.companyMetrics.operatingProfitEok.toLocaleString("ko-KR")}억 · 매출증가액 ${job.companyComparison.revenueIncreaseEok.toLocaleString("ko-KR")}억\n${job.url}`;
   const source = job.source || "원본";
-  const prefix = fallback ? `[MKS 상위 채용 중 · ${source}]\n${job.company}\n` : `[MKS 상위 신규 공고 · ${source}]\n${job.company}\n`;
+  const cluster = classify(job.title);
+  const role = cluster === "process" ? "공정" : cluster === "cs" ? "CS/FSE" : "반도체";
+  const prefix = fallback ? `[${role} · MKS 상위 채용 중 · ${source}]\n${job.company}\n` : `[${role} · MKS 상위 신규 · ${source}]\n${job.company}\n`;
   const available = Math.max(12, 200 - prefix.length - suffix.length);
   const title = job.title.length > available ? `${job.title.slice(0, available - 1)}…` : job.title;
   return `${prefix}${title}${suffix}`.slice(0, 200);
@@ -559,7 +589,7 @@ await saveState({
 
 const summary = `CareerOps: ${rankedJobs.length}건 평가, A등급 ${aJobs.length}건, 새 A등급 ${newAJobs.length}건, 채용 중 대체추천 ${fallbackSent}건, 카카오 발송 ${sent}건`;
 const benchmarkSummary = `MKS 기준 제외 ${excluded}건 · 기준 평균연봉 ${benchmark.averageSalaryManwon.toLocaleString("ko-KR")}만원`;
-const sourceSummary = `원본 조회: 사람인 ${sourceCounts.saramin}건(오류 ${sourceCounts.saraminErrors}건${sourceCounts.saraminUnavailable ? ", 일시장애 fallback" : ""}) · 잡코리아 ${sourceCounts.jobKorea}건 · 기업 공식/원문 ${sourceCounts.official}건 · 대상직무 ${sourceCounts.targetRole}건 · 신입명시 ${sourceCounts.newGraduate}건 · 대졸이상 ${sourceCounts.bachelorOrHigher}건 · 재무미확인 ${sourceCounts.metricsUnverified}건 · MKS미달 ${sourceCounts.belowBenchmark}건`;
+const sourceSummary = `원본 조회: 사람인 ${sourceCounts.saramin}건(오류 ${sourceCounts.saraminErrors}건${sourceCounts.saraminUnavailable ? ", 일시장애 fallback" : ""}) · 잡코리아 ${sourceCounts.jobKorea}건 · 기업 공식/원문 ${sourceCounts.official}건 · 반도체기업 ${sourceCounts.targetRole}건(공정 ${sourceCounts.processRole} / CS·FSE ${sourceCounts.serviceRole} / 기타 ${sourceCounts.targetRole - sourceCounts.processRole - sourceCounts.serviceRole}) · 신입명시 ${sourceCounts.newGraduate}건 · 대졸이상 ${sourceCounts.bachelorOrHigher}건 · 재무미확인 ${sourceCounts.metricsUnverified}건 · MKS미달 ${sourceCounts.belowBenchmark}건`;
 console.log(summary);
 console.log(benchmarkSummary);
 console.log(sourceSummary);

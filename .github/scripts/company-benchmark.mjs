@@ -105,6 +105,7 @@ export function compareWithMks(company, benchmark) {
   const revenueIncreaseWin = companyRevenueIncrease > benchmarkRevenueIncrease;
   const scaleWins = [revenueWin, operatingProfitWin, employeeWin].filter(Boolean).length;
   const wins = [salaryWin, revenueWin, operatingProfitWin, employeeWin, revenueIncreaseWin].filter(Boolean).length;
+  const dominantScaleWin = revenueWin && operatingProfitWin && employeeWin;
   return {
     benchmarkCompany: "엠케이에스코리아",
     salaryDeltaPct: deltaPercent(company.averageSalaryManwon, benchmark.averageSalaryManwon),
@@ -117,7 +118,7 @@ export function compareWithMks(company, benchmark) {
     revenueIncreaseDeltaEok: round(companyRevenueIncrease - benchmarkRevenueIncrease),
     wins,
     scaleWins,
-    qualified: scaleWins >= 2 && wins >= 3 && (salaryWin || revenueIncreaseWin),
+    qualified: scaleWins >= 2 && wins >= 3 && (salaryWin || revenueIncreaseWin || dominantScaleWin),
   };
 }
 
@@ -196,12 +197,21 @@ function findTag(lowerHtml, prefix, fromIndex) {
 }
 
 async function fetchText(url) {
-  const response = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; CareerOps/1.0)" },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) throw new Error(`Company page request failed: ${response.status}`);
-  return response.text();
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; CareerOps/1.0)" },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) throw new Error(`Company page request failed: ${response.status}`);
+      return await response.text();
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 1_000));
+    }
+  }
+  throw lastError;
 }
 
 function number(value) { return Number(value.replace(/,/g, "")); }
