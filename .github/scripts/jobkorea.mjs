@@ -1,5 +1,7 @@
 export const JOBKOREA_HIGH_TECH_URL = "https://www.jobkorea.co.kr/recruit/high-tech";
 export const JOBKOREA_SEARCH_QUERIES = [
+  "ASML Korea 신입",
+  "에이에스엠엘코리아 신입",
   "반도체 회사 신입 대졸",
   "반도체 제조업 신입 대졸",
   "반도체 장비 회사 신입 대졸",
