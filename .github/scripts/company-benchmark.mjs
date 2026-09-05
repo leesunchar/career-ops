@@ -72,6 +72,9 @@ export async function scrapeJobKoreaCompanyMetrics(company, companyUrl) {
       fetchText(canonicalUrl),
       fetchText(`${canonicalUrl}salary`),
     ]);
+    // A search-card can occasionally contain a related company's profile URL.
+    // Never attach that company's financials to the job's actual employer.
+    if (!pageMatchesCompany(mainHtml, company) || !pageMatchesCompany(salaryHtml, company)) return null;
     const salary = salaryHtml.match(/평균연봉\s*([\d,]+)\s*만원/i);
     const salaryYear = salaryHtml.match(/(20\d{2})년\s*기준/i);
     const employees = mainHtml.match(/<th[^>]*>\s*사원수\s*<\/th>[\s\S]{0,900}?<div class=["']value["']>\s*([\d,]+)\s*명/i);
@@ -152,6 +155,18 @@ function normalizeCompany(value) {
   return value.toLocaleLowerCase("ko-KR")
     .replace(/주식회사|유한회사|\(주\)|\(유\)|㈜|co\.?\s*,?\s*ltd\.?|ltd\.?/gi, "")
     .replace(/[^a-z0-9가-힣]/g, "");
+}
+
+function pageMatchesCompany(html, company) {
+  const expected = normalizeCompany(company);
+  if (!expected) return false;
+  const pageIdentity = [
+    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1],
+    html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1],
+    html.match(/property=["']og:title["'][^>]*content=["']([^"']+)/i)?.[1],
+    html.match(/content=["']([^"']+)["'][^>]*property=["']og:title["']/i)?.[1],
+  ].filter(Boolean).map(stripHtml).join(" ");
+  return normalizeCompany(pageIdentity).includes(expected);
 }
 
 function stripHtml(html) {

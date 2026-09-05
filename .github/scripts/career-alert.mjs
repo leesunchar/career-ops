@@ -31,6 +31,7 @@ const serviceSearchQueries = [
   "도쿄일렉트론 CS", "ASM Korea Field Service", "한화세미텍 CS",
 ];
 const companyWideSearchQueries = [
+  "ASML Korea 신입", "에이에스엠엘코리아 신입",
   "반도체 회사 신입 대졸", "반도체 제조업 신입 대졸", "반도체 장비 회사 신입 대졸",
   "반도체 소재 회사 신입 대졸", "반도체 부품 회사 신입 대졸", "반도체 연구개발 신입 대졸",
   "반도체 품질 신입 대졸", "반도체 생산 신입 대졸", "반도체 기술영업 신입 대졸",
@@ -46,6 +47,32 @@ const companyBudgetMs = 3 * 60 * 1000;
 // 검색 제공자가 일시 장애여도 놓치면 안 되는 검증된 공식/원문 공고입니다.
 // 매 실행마다 URL 응답과 마감 문구를 다시 확인하므로 만료된 공고는 자동 제외됩니다.
 const officialCareerJobs = [
+  {
+    id: "official-asml-j00339130",
+    company: "에이에스엠엘코리아(유)",
+    title: "HMI Applications Engineer",
+    url: "https://www.asml.com/en/careers/find-your-job/hmi-applications-engineer-j00339130",
+    deadline: "채용중",
+    career: "신입·경력 0~3년",
+    location: "경기 화성시",
+    education: "신입 석사 이상 · 경력 학사 이상",
+    industry: "반도체 e-Beam 검사·계측 장비 및 공정 애플리케이션",
+    companyInfoUrl: "https://www.jobkorea.co.kr/company/1612091",
+    source: "기업 공식",
+  },
+  {
+    id: "saramin-54856833",
+    company: "에이에스엠엘코리아(유)",
+    title: "2026년 하반기 ASML 신입 채용",
+    url: "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54856833",
+    deadline: "2026-09-08",
+    career: "신입",
+    location: "경기 화성시·이천시·평택시",
+    education: "대학교졸업(4년)이상",
+    industry: "기타 엔지니어링 서비스업 · 반도체장비·노광장비 엔지니어링 및 반도체 관련 부품",
+    companyInfoUrl: "https://www.jobkorea.co.kr/company/1612091",
+    source: "사람인 원문",
+  },
   {
     id: "official-asm-4938903101",
     company: "에이에스엠케이(주)",
@@ -73,6 +100,15 @@ const officialCareerJobs = [
 ];
 
 const knownCompanyMetrics = [
+  {
+    match: /에이에스엠엘코리아|asml\s*korea/i,
+    metrics: {
+      company: "에이에스엠엘코리아(유)", averageSalaryManwon: 6912, revenueEok: 140000,
+      operatingProfitEok: 4103, employees: 2500, revenueGrowthPct: 40,
+      operatingProfitGrowthPct: 24.6, financialYear: 2025, salaryYear: 2022,
+      sourceUrl: "https://www.jobkorea.co.kr/company/1612091/",
+    },
+  },
   {
     match: /에이에스엠케이|asm\s*korea/i,
     metrics: {
@@ -162,7 +198,7 @@ function classify(title) {
 }
 
 function isSemiconductorJob(job) {
-  return /반도체|semiconductor|wafer|fab|웨이퍼|디스플레이|display/i.test(`${job.company} ${job.title} ${job.industry || ""}`);
+  return /반도체|semiconductor|wafer|fab|웨이퍼|디스플레이|display/i.test(job.industry || "");
 }
 
 function experienceFit(career, title) {
@@ -221,6 +257,19 @@ function rankJob(job, metrics, benchmark, comparison) {
   };
 }
 
+function rankPendingJob(job) {
+  return {
+    ...job,
+    score: 0,
+    grade: "D",
+    reason: "반도체 기업·신입·대졸 이상 조건은 확인했지만 회사 재무정보를 확보하지 못해 MKS 비교를 보류했습니다.",
+    missing: "평균연봉·영업이익액·매출 증가액·직원 수 확인 필요",
+    keywords: ["재무 검증 대기", "대졸 이상", "반도체 기업"],
+    breakdown: { experience: experienceFit(job.career, job.title), conditions: 0, growth: 0 },
+    verificationStatus: "pending_company_metrics",
+  };
+}
+
 function decodeHtml(value) {
   return value
     .replace(/&quot;/g, '"')
@@ -233,11 +282,14 @@ function decodeHtml(value) {
 function extractJobMeta(html) {
   const description = html.match(/<meta\s+(?:name|property)=["'](?:description|og:description)["']\s+content=["']([^"']+)["']/i)?.[1]
     ?? html.match(/<meta\s+content=["']([^"']+)["']\s+(?:name|property)=["'](?:description|og:description)["']/i)?.[1];
-  const source = decodeHtml(description || html.replace(/<[^>]+>/g, " "));
+  const fullText = decodeHtml(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ");
+  const source = decodeHtml(description || fullText);
+  const industryEvidence = fullText.match(/(?:업종|사업내용|사업을\s*하는)[^.!?]{0,300}(?:반도체|semiconductor|wafer|웨이퍼|fab|디스플레이|display)[^.!?]{0,300}/i)?.[0]?.trim() || null;
   return {
     education: source.match(/학력\s*:\s*([^,|<]{1,50})/i)?.[1]?.trim() || null,
     career: source.match(/경력\s*:\s*([^,|<]{1,50})/i)?.[1]?.trim() || null,
     deadline: source.match(/마감일\s*:\s*((?:20\d{2}[.\-/]\d{1,2}[.\-/]\d{1,2})|채용시|상시채용?)/i)?.[1]?.trim() || null,
+    industry: industryEvidence,
     companyInfoUrl: decodeHtml(html.match(/href=["'](https?:\/\/www\.jobkorea\.co\.kr\/company\/\d+[^"']*)["']/i)?.[1] || "") || null,
   };
 }
@@ -261,6 +313,7 @@ async function fetchEducation(job) {
       ...(meta.education ? { education: meta.education } : {}),
       ...(meta.career ? { career: meta.career } : {}),
       ...(meta.deadline ? { deadline: meta.deadline } : {}),
+      ...(meta.industry ? { industry: meta.industry } : {}),
       ...(meta.companyInfoUrl ? { companyInfoUrl: meta.companyInfoUrl } : {}),
     };
     return isBachelorOrHigher(meta.education) && isActiveJob(enriched) ? enriched : null;
@@ -345,14 +398,15 @@ async function loadActiveOfficialJobs() {
         redirect: "follow",
         signal: AbortSignal.timeout(15_000),
       });
-      if (!response.ok) return null;
+      if (!response.ok) return job.source === "사람인 원문" && isActiveJob(job) ? job : null;
       const html = await response.text();
       if (/position has been filled|position is no longer available|job is no longer available|채용이 마감/i.test(html)) return null;
       if (/opportunities\.lamresearch\.com/i.test(response.url) && !/apply now/i.test(html)) return null;
       if (/asm\.com\/open-vacancies/i.test(response.url) && !/apply now/i.test(html)) return null;
+      if (/asml\.com\/en\/careers\/find-your-job/i.test(response.url) && !/apply|job id|new job id/i.test(html)) return null;
       return job;
     } catch {
-      return null;
+      return job.source === "사람인 원문" && isActiveJob(job) ? job : null;
     }
   }));
   return checked.filter(Boolean);
@@ -378,19 +432,21 @@ async function filterCompaniesAboveMks(jobs, concurrency = 4) {
   await Promise.all(workers);
 
   const qualified = [];
+  const pending = [];
   let unverified = 0;
   let belowBenchmark = 0;
   for (const job of jobs) {
     const metrics = metricsByCompany.get(job.company);
     if (!metrics) {
       unverified += 1;
+      pending.push(job);
       continue;
     }
     const comparison = compareWithMks(metrics, benchmark);
     if (comparison.qualified) qualified.push({ job, metrics, comparison });
     else belowBenchmark += 1;
   }
-  return { qualified, benchmark, excluded: jobs.length - qualified.length, unverified, belowBenchmark };
+  return { qualified, pending, benchmark, excluded: belowBenchmark, unverified, belowBenchmark };
 }
 
 async function searchJobs() {
@@ -438,9 +494,7 @@ async function searchJobs() {
         if (search.failures >= 2) search.done = true;
         continue;
       }
-      const pageJobs = extractJobs(result).map((job) => (
-        /반도체|semiconductor/i.test(search.query) ? { ...job, industry: "반도체" } : job
-      ));
+      const pageJobs = extractJobs(result);
       const unseenJobs = pageJobs.filter((job) => !search.seenIds.has(job.id));
       if (!pageJobs.length || !unseenJobs.length) {
         search.done = true;
@@ -458,15 +512,17 @@ async function searchJobs() {
   if (!successfulCalls && !jobKoreaJobs.length && !officialJobs.length) throw new Error("사람인·잡코리아·기업 공식 채용사이트 검색이 모두 실패했습니다.");
   const saraminJobs = [...jobsById.values()];
   const jobs = dedupeJobs([...officialJobs, ...saraminJobs, ...jobKoreaJobs]);
-  const targetJobs = jobs.filter(isSemiconductorJob);
-  const newGraduateJobs = targetJobs.filter(isNewGraduateEligible);
+  const activeJobs = jobs.filter(isActiveJob);
+  const newGraduateJobs = activeJobs.filter(isNewGraduateEligible);
   const bachelorJobs = (await filterBachelorJobs(newGraduateJobs)).filter(isNewGraduateEligible);
-  const { qualified, benchmark, excluded, unverified, belowBenchmark } = await filterCompaniesAboveMks(bachelorJobs);
-  if (bachelorJobs.length && unverified === bachelorJobs.length) {
+  const targetJobs = bachelorJobs.filter(isSemiconductorJob);
+  const { qualified, pending, benchmark, excluded, unverified, belowBenchmark } = await filterCompaniesAboveMks(targetJobs);
+  if (targetJobs.length && unverified === targetJobs.length) {
     throw new Error(`회사 재무정보 조회가 전부 실패했습니다 (${unverified}건). 0건 성공으로 처리하지 않고 다음 예약 실행에서 재시도합니다.`);
   }
   const rankedJobs = qualified
     .map(({ job, metrics, comparison }) => rankJob(job, metrics, benchmark, comparison))
+    .concat(pending.map(rankPendingJob))
     .sort((a, b) => b.score - a.score);
   return {
     rankedJobs,
@@ -480,7 +536,7 @@ async function searchJobs() {
       processRole: targetJobs.filter((job) => classify(job.title) === "process").length,
       serviceRole: targetJobs.filter((job) => classify(job.title) === "cs").length,
       newGraduate: newGraduateJobs.length,
-      bachelorOrHigher: bachelorJobs.length,
+      bachelorOrHigher: targetJobs.length,
       metricsUnverified: unverified,
       belowBenchmark,
       saraminErrors,
@@ -497,7 +553,20 @@ function dedupeJobs(jobs) {
   const unique = new Map();
   for (const job of jobs) {
     const key = `${normalizeJobKey(job.company)}|${normalizeJobKey(job.title)}`;
-    if (!unique.has(key)) unique.set(key, job);
+    const existing = unique.get(key);
+    if (!existing) {
+      unique.set(key, { ...job, sourceUrls: [job.url] });
+      continue;
+    }
+    unique.set(key, {
+      ...job,
+      ...existing,
+      education: existing.education || job.education,
+      industry: existing.industry || job.industry,
+      companyInfoUrl: existing.companyInfoUrl || job.companyInfoUrl,
+      deadline: existing.deadline || job.deadline,
+      sourceUrls: [...new Set([...(existing.sourceUrls || [existing.url]), job.url])],
+    });
   }
   return [...unique.values()];
 }
@@ -570,7 +639,7 @@ const today = koreaDate();
 if (state.lastFallbackSentDate !== today) {
   const newJobIds = new Set(newAJobs.map((job) => job.id));
   const activeAJobs = aJobs.filter((job) => isActiveJob(job) && !newJobIds.has(job.id));
-  const activeJobs = rankedJobs.filter((job) => isActiveJob(job) && !newJobIds.has(job.id));
+  const activeJobs = rankedJobs.filter((job) => job.verificationStatus !== "pending_company_metrics" && isActiveJob(job) && !newJobIds.has(job.id));
   const fallbackJobs = (activeAJobs.length ? activeAJobs : activeJobs).slice(0, 3);
   for (const job of fallbackJobs) {
     await callMcporterWithRetry("KakaotalkChat-MemoChat", { message: alertMessage(job, true) });
